@@ -8,7 +8,7 @@
 --  adapter с MFU на контроллер). Стороны настраивает установщик
 --  (bhc-install sides → /home/bhc-hw.cfg), по умолчанию — таблица HW ниже.
 --
---  Экран: T3 5×2, видеокарта T3. Разрешение 128×24.
+--  Экран: T3 (например 5×2), видеокарта T3. Разрешение 160×50.
 --  Выход: кнопка «ВЫХОД» (дважды) или Ctrl+Alt+C.
 --
 --  Механика взята из MTEBlackHoleCompressor.java (GT5-Unofficial):
@@ -21,7 +21,7 @@
 --   * рецепт, который идёт при стабильности <= 0, войдится.
 -- =====================================================================
 
-local VERSION = "0.3.2"
+local VERSION = "0.4.0"
 
 local component = require("component")
 local computer  = require("computer")
@@ -44,7 +44,7 @@ local HW = {
   busSide         = sides.down,  -- Transposer: обычный input bus BHC
   seedSlot        = 1,
   collapserSlot   = 2,
-  resolution      = {128, 24},   -- под экран T3 5×2
+  resolution      = {160, 50},   -- T3 максимум; на экране 5×2 по бокам будут поля
   stLatency       = 0.4,         -- с: сколько нужно хэтчу, чтобы включиться (cover 5 тиков + запас)
   pulseTimeout    = 2.5,         -- с без импульсов → дыра закрыта
   openAttemptSec  = 10,          -- с на одну попытку открытия (seed должен быть принят)
@@ -746,207 +746,32 @@ local function zoneCol(v, dim)
   return dim and C.z1d or C.z1
 end
 
--- ---------- главный экран ----------
-local function drawHeader()
-  fill(1, 1, W, 1, " ", C.text, C.title)
-  put(2, 1, "◉ ПСЕВДОСТАБИЛЬНАЯ ЧЁРНАЯ ДЫРА", C.accent, C.title)
-  put(35, 1, "· контроль BHC", C.dim, C.title)
-  local right = os.date("%H:%M")
-  rput(W - 1, 1, right, C.dim, C.title)
-  local a = CFG.auto and " АВТО ● " or " ПАУЗА ‖ "
-  rput(W - 8, 1, a, CFG.auto and C.green or C.yellow, C.title)
-end
-
-local function drawPipeline()
-  local y = 3
-  if S.phase == "RECOVERY" then
-    local s = " ⚠ ВОССТАНОВЛЕНИЕ: закрываем дыру с неизвестной стабильностью "
-    put(math.floor((W - ulen(s)) / 2) + 1, y, s, C.black, C.orange)
-    return
-  end
-  local cur = 1
-  for i, p in ipairs(PHASES) do if p == S.phase then cur = i end end
-  local P = S.plan or makePlan(CFG)
-  local total = 0
-  for i, p in ipairs(PHASES) do total = total + ulen(PHASE_RU[p]) + 2 + (i > 1 and 3 or 0) end
-  local x = math.floor((W - total) / 2) + 1
-  for i, p in ipairs(PHASES) do
-    if i > 1 then put(x, y, " › ", C.faint, C.bg); x = x + 3 end
-    local label = " " .. PHASE_RU[p] .. " "
-    local fg, bg = C.dim, C.panel
-    if i == cur then fg, bg = C.black, (p == "HOLD" and C.accent or C.cyan)
-    elseif p == "HOLD" and P.hold == 0 then fg = C.faint
-    elseif i < cur and cur > 1 then fg = C.green end
-    put(x, y, label, fg, bg)
-    x = x + ulen(label)
-  end
-end
-
-local function drawStability()
-  local P = S.plan or makePlan(CFG)
-  local open = OPEN_PHASES[S.phase] or S.phase == "COLLAPSE"
-  local y = 5
-  put(3, y, "СТАБИЛЬНОСТЬ", C.dim, C.bg)
-  local stab = S.stab or 100
-  local vtxt, vcol
-  if not open then vtxt, vcol = "—", C.dim
-  elseif S.unknown then vtxt, vcol = "??", C.orange
-  else vtxt, vcol = math.max(0, stab) .. "%", (stab <= 0) and C.red or zoneCol(stab) end
-  put(17, y, vtxt, vcol, C.bg)
-  local mtxt = ""
-  if open and not S.unknown and stab > 0 then
-    local m = zoneMult(stab)
-    mtxt = "×" .. m .. " параллели" .. (m == 4 and " · обычные рецепты без лимита" or "")
-  end
-  put(23, y, mtxt, C.text, C.bg)
-  put(70, y, "цель " .. P.target .. "%", C.dim, C.bg)
-  local st, scol
-  if S.phase == "IDLE" or S.phase == "OPENING" then st, scol = "дыра закрыта", C.dim
-  elseif S.phase == "COLLAPSE" then st, scol = "схлопывается", C.dim
-  elseif not S.unknown and stab <= 0 then st, scol = "⚠ НЕСТАБИЛЬНА — рецепты войдятся", C.red
-  elseif S.stOn then st, scol = "▣ заморожена spacetime", C.accent
-  else st, scol = "распад −1%/с", C.cyan end
-  rput(W - 2, y, st, scol, C.bg)
-
-  local x0, bw = 3, W - 4
-  for i = 1, bw do
-    local v = (i - 0.5) / bw * 100
-    local filled = open and not S.unknown and v <= stab
-    local bg = zoneCol(v, not filled)
-    fill(x0 + i - 1, 6, 1, 2, " ", C.text, bg)
-  end
-  local xt = x0 + math.floor(P.target / 100 * bw)
-  put(xt, 6, "┃", C.white, zoneCol(P.target, not (open and not S.unknown and P.target <= stab)))
-  put(xt, 7, "┃", C.white, zoneCol(P.target, not (open and not S.unknown and P.target <= stab)))
-  local function at(pct) return x0 + math.floor(pct / 100 * bw) end
-  put(x0, 8, "0", C.dim, C.bg)
-  put(at(10) - 1, 8, "×4", C.z4, C.bg)
-  put(at(20), 8, "20", C.dim, C.bg)
-  put(at(35) - 1, 8, "×2", C.z2, C.bg)
-  put(at(50), 8, "50", C.dim, C.bg)
-  put(at(75) - 1, 8, "×1", C.z1, C.bg)
-  rput(x0 + bw - 1, 8, "100%", C.dim, C.bg)
-end
-
-local function drawLifetime()
-  local P = S.plan or makePlan(CFG)
-  local y = 10
-  put(3, y, "ВРЕМЯ ЖИЗНИ", C.dim, C.bg)
-  local open = S.phase ~= "IDLE" and S.phase ~= "OPENING"
-  put(17, y, (open and S.pulses or 0) .. " / " .. P.maxRuntime .. " с", C.text, C.bg)
-  put(31, y, ("стаб. %d–%d с · collapser %d с"):format(P.holdStart, P.closeAt, P.closeAt), C.dim, C.bg)
-  local lx = W - 62
-  local function leg(x, col, txt) put(x, y, "■", col, C.bg); put(x + 2, y, txt, C.dim, C.bg); return x + 3 + ulen(txt) end
-  lx = leg(lx, HIST.D, "распад")
-  lx = leg(lx, HIST.H, "стабилизация")
-  lx = leg(lx, HIST.C, "хвост")
-  lx = leg(lx, HIST.X, "нестабильна")
-  put(lx, y, "(ярко = работа)", C.faint, C.bg)
-
-  local x0, bw = 3, W - 4
-  local hist = S.history or {}
-  local scale = math.max(P.maxRuntime, #hist, 1)
-  for i = 1, bw do
-    local s2 = math.floor(i * scale / bw)
-    local s1 = math.floor((i - 1) * scale / bw) + 1
-    -- ячейка = диапазон секунд; «работа» важнее «простоя», иначе — последняя секунда
-    local col, last
-    for s = s1, s2 do
-      local k = hist[s]
-      if k then
-        last = k
-        if k:upper() == k then col = HIST[k] end
+-- ---------- крупные цифры (3×5 «пикселей», пиксель = 2 символа) ----------
+local GLYPH = {
+  ["0"] = { "###", "#.#", "#.#", "#.#", "###" }, ["1"] = { ".#.", "##.", ".#.", ".#.", "###" },
+  ["2"] = { "###", "..#", "###", "#..", "###" }, ["3"] = { "###", "..#", "###", "..#", "###" },
+  ["4"] = { "#.#", "#.#", "###", "..#", "..#" }, ["5"] = { "###", "#..", "###", "..#", "###" },
+  ["6"] = { "###", "#..", "###", "#.#", "###" }, ["7"] = { "###", "..#", "..#", "..#", "..#" },
+  ["8"] = { "###", "#.#", "###", "#.#", "###" }, ["9"] = { "###", "#.#", "###", "..#", "###" },
+  ["%"] = { "#.#", "..#", ".#.", "#..", "#.#" }, ["?"] = { "###", "..#", ".##", "...", ".#." },
+  ["-"] = { "...", "...", "###", "...", "..." },
+}
+local function bigWidth(str) return #str * 7 - 1 end
+local function bigText(x, y, str, fg, bg)
+  for i = 1, #str do
+    local g = GLYPH[str:sub(i, i)] or GLYPH["?"]
+    for row = 1, 5 do
+      local line = g[row]
+      for c = 1, 3 do
+        if line:sub(c, c) == "#" then fill(x + (i - 1) * 7 + (c - 1) * 2, y + row - 1, 2, 1, " ", fg, fg) end
       end
     end
-    if not col and last then col = HIST[last] end
-    if not col then
-      local sec = s2
-      if sec <= P.holdStart then col = 0x141C24
-      elseif sec <= P.closeAt then col = 0x1E1428
-      else col = 0x14201C end
-    end
-    fill(x0 + i - 1, 11, 1, 1, " ", C.text, col)
-  end
-  local function at(sec) return x0 + math.floor(sec / scale * bw) end
-  put(x0, 12, "0", C.dim, C.bg)
-  if P.hold > 0 then
-    put(at(P.holdStart), 12, "▲" .. P.holdStart .. "с", C.accent, C.bg)
-  end
-  put(at(P.closeAt), 12, "▲" .. P.closeAt .. "с", C.cyan, C.bg)
-  rput(x0 + bw - 1, 12, scale .. " с", C.dim, C.bg)
-end
-
-local function drawPanels()
-  local P = S.plan or makePlan(CFG)
-  local y, h = 14, 7
-  local xs = { 2, 33, 64, 89 }
-  local ws = { 30, 30, 24, W - 89 }
-  local open = OPEN_PHASES[S.phase]
-
-  -- SPACETIME
-  local x, w = xs[1], ws[1]
-  box(x, y, w, h, "SPACETIME", C.accent)
-  local iw = w - 4
-  kv(x + 2, y + 1, iw, "Цена сейчас", S.stOn and (fmtL(drainCost((S.drains or 0) + 1)) .. " L/с") or "выкл",
-     S.stOn and C.accent or C.dim)
-  local dbl = "—"
-  if open and not S.unknown and (S.drains or 0) > 0 then dbl = (30 - S.drains % 30) .. " сл." end
-  kv(x + 2, y + 2, iw, "Удвоение через", dbl, C.text)
-  kv(x + 2, y + 3, iw, "За этот цикл", S.unknown and "?" or (fmtL(S.cycleST or 0) .. " L"), C.text)
-  kv(x + 2, y + 4, iw, "План/+" .. P.extra .. "с", fmtL(P.holdCost) .. " / " .. fmtL(P.fullCost) .. " L", C.text)
-  if hasStocker() then
-    kv(x + 2, y + 5, iw, "В стокере", fmtL(S.res.st) .. " L", S.res.st >= P.fullCost and C.green or C.red)
-  else
-    kv(x + 2, y + 5, iw, "Предохранитель", "≥ " .. fmtL(math.ceil(P.fullCost * 1.5)) .. " L", C.dim)
-  end
-
-  -- МАШИНА
-  x, w = xs[2], ws[2]
-  box(x, y, w, h, "МАШИНА", C.cyan)
-  iw = w - 4
-  local m = S.mach
-  local stxt, scol = "ПРОСТОЙ", C.dim
-  if not m.allowed then stxt, scol = "ОТКЛЮЧЕНА", C.orange elseif m.work then stxt, scol = "РАБОТАЕТ", C.cyan end
-  kv(x + 2, y + 1, iw, "Состояние", stxt, scol)
-  put(x + 2, y + 2, "Рецепт", C.dim, C.panel)
-  local bwid = iw - 12
-  local nfill = m.work and math.floor(m.frac * bwid + 0.5) or 0
-  fill(x + 9, y + 2, bwid, 1, " ", C.text, C.faint)
-  if nfill > 0 then fill(x + 9, y + 2, nfill, 1, " ", C.text, C.cyan) end
-  rput(x + 2 + iw - 1, y + 2, m.work and (math.floor(m.frac * 100) .. "%") or "—", C.text, C.panel)
-  kv(x + 2, y + 3, iw, "Осталось", m.work and string.format("%.1f из %.1f с", m.rem, m.dur) or "—", C.text)
-  local par = "—"
-  if open and not S.unknown and S.stab > 0 then par = "×" .. zoneMult(S.stab) end
-  kv(x + 2, y + 4, iw, "Параллели", par, C.text)
-  local mr = CFG.stats.maxRecipe or 0
-  kv(x + 2, y + 5, iw, "Самый длинный", mr > 0 and string.format("%.1f с", mr) or "—",
-     P.unprotectable and C.red or C.text)
-
-  -- РЕСУРСЫ
-  x, w = xs[3], ws[3]
-  box(x, y, w, h, "РЕСУРСЫ", C.green)
-  iw = w - 4
-  kv(x + 2, y + 1, iw, "Seeds", tostring(S.res.seeds), S.res.seeds > 0 and C.text or C.red)
-  kv(x + 2, y + 2, iw, "Collapsers", tostring(S.res.coll),
-     (S.res.coll > 0 or not CFG.useCollapser) and C.text or C.red)
-  kv(x + 2, y + 3, iw, "Входы", S.res.inputs and "есть" or "нет", S.res.inputs and C.green or C.dim)
-  kv(x + 2, y + 4, iw, "Циклы/войды", CFG.stats.cycles .. " / " .. CFG.stats.voids,
-     CFG.stats.voids > 0 and C.yellow or C.text)
-  kv(x + 2, y + 5, iw, "ST всего", fmtL(CFG.stats.spacetime) .. " L", C.text)
-
-  -- ЖУРНАЛ
-  x, w = xs[4], ws[4]
-  box(x, y, w, h, "ЖУРНАЛ", C.dim)
-  iw = w - 4
-  local kcol = { info = C.text, ok = C.green, warn = C.yellow, err = C.red }
-  for i = 1, 5 do
-    local e = LOG[i]
-    if e then
-      put(x + 2, y + i, e.t:sub(1, 5), C.faint, C.panel)
-      put(x + 8, y + i, fit(e.m, iw - 6), kcol[e.k] or C.text, C.panel)
-    end
   end
 end
+
+-- ---------- главный экран 160×50: слева цикл/стабильность/панели/журнал, справа крупно стабильность, ресурсы, сессия, кнопки ----------
+local LX, LW, RX            -- задаются в draw() от W
+local function layoutCols() LX, LW = 2, W - 53; RX = W - 49 end
 
 local function statusLine()
   local P = S.plan or makePlan(CFG)
@@ -984,47 +809,231 @@ local function statusLine()
   return "", C.text
 end
 
-local function drawMain()
-  drawHeader()
-  drawPipeline()
-  drawStability()
-  drawLifetime()
-  drawPanels()
-  local s, col = statusLine()
-  put(3, 21, "● ", col, C.bg)
-  put(5, 21, fit(s, W - 30), col, C.bg)
-  rput(W - 2, 21, "Ctrl+Alt+C — выход", C.faint, C.bg)
+local function isOpen() return OPEN_PHASES[S.phase] or S.phase == "COLLAPSE" end
 
-  local bw, by, gap = 24, 22, 1
-  local x = 3
-  button(x, by, bw, 3, CFG.auto and "АВТО: ВКЛ" or "АВТО: ПАУЗА", C.white, CFG.auto and C.btnOn or C.btn, function()
+local function drawHeader()
+  fill(1, 1, W, 1, " ", C.text, C.title)
+  put(2, 1, "◉ ПСЕВДОСТАБИЛЬНАЯ ЧЁРНАЯ ДЫРА", C.accent, C.title)
+  put(35, 1, "· BHC Control " .. VERSION, C.dim, C.title)
+  local chip = "[ " .. PHASE_RU[S.phase] .. " ]"
+  put(math.floor((W - ulen(chip)) / 2), 1, chip, S.phase == "RECOVERY" and C.orange or C.cyan, C.title)
+  rput(W - 1, 1, os.date("%H:%M:%S"), C.dim, C.title)
+  rput(W - 11, 1, CFG.auto and "● АВТО" or "‖ ПАУЗА", CFG.auto and C.green or C.yellow, C.title)
+end
+
+local function drawCycle(y)
+  local P = S.plan or makePlan(CFG)
+  local open = S.phase ~= "IDLE" and S.phase ~= "OPENING"
+  box(LX, y, LW, 9, "ЦИКЛ #" .. (CFG.stats.cycles + (open and 1 or 0)), C.cyan)
+  local x0, bw = LX + 2, LW - 4
+  -- фазы
+  if S.phase == "RECOVERY" then
+    put(x0, y + 1, " ⚠ ВОССТАНОВЛЕНИЕ: закрываем дыру с неизвестной стабильностью ", C.black, C.orange)
+  else
+    local cur = 1
+    for i, p in ipairs(PHASES) do if p == S.phase then cur = i end end
+    local x = x0
+    for i, p in ipairs(PHASES) do
+      if i > 1 then put(x, y + 1, " › ", C.faint, C.panel); x = x + 3 end
+      local label = " " .. PHASE_RU[p] .. " "
+      local fg, bg = C.dim, C.bg
+      if i == cur then fg, bg = C.black, (p == "HOLD" and C.accent or C.cyan)
+      elseif p == "HOLD" and P.hold == 0 then fg = C.faint
+      elseif i < cur and cur > 1 then fg = C.green end
+      put(x, y + 1, label, fg, bg); x = x + ulen(label)
+    end
+  end
+  -- полоса времени жизни
+  local hist = S.history or {}
+  local scale = math.max(P.maxRuntime, #hist, 1)
+  for i = 1, bw do
+    local s1, s2 = math.floor((i - 1) * scale / bw) + 1, math.floor(i * scale / bw)
+    local col, last
+    for s = s1, s2 do local k = hist[s]; if k then last = k; if k:upper() == k then col = HIST[k] end end end
+    if not col and last then col = HIST[last] end
+    if not col then
+      if s2 <= P.holdStart then col = 0x141C24 elseif s2 <= P.closeAt then col = 0x1E1428 else col = 0x14201C end
+    end
+    fill(x0 + i - 1, y + 3, 1, 2, " ", C.text, col)
+  end
+  local function at(sec) return x0 + math.floor(sec / scale * bw) end
+  put(x0, y + 5, "0", C.dim, C.panel)
+  if P.hold > 0 then put(at(P.holdStart), y + 5, "▲" .. P.holdStart .. "с", C.accent, C.panel) end
+  local endLabel = scale .. " с"
+  if at(P.closeAt) + 7 < x0 + bw - ulen(endLabel) then rput(x0 + bw - 1, y + 5, endLabel, C.dim, C.panel) end
+  put(at(P.closeAt), y + 5, "▲" .. P.closeAt .. "с", C.cyan, C.panel)
+  put(x0, y + 6, ((open and S.pulses or 0) .. " / " .. P.maxRuntime .. " с"), C.text, C.panel)
+  put(x0 + 14, y + 6, ("стабилизация %d–%d с · collapser на %d с"):format(P.holdStart, P.closeAt, P.closeAt), C.dim, C.panel)
+  local lx = x0
+  local function leg(x, col, txt) put(x, y + 7, "■", col, C.panel); put(x + 2, y + 7, txt, C.dim, C.panel); return x + 3 + ulen(txt) end
+  lx = leg(lx, HIST.D, "распад"); lx = leg(lx, HIST.H, "стабилизация"); lx = leg(lx, HIST.C, "хвост")
+  lx = leg(lx, HIST.X, "нестабильна"); put(lx, y + 7, "(ярко = работа)", C.faint, C.panel)
+end
+
+local function drawStabBar(y)
+  local P = S.plan or makePlan(CFG)
+  local open, stab = isOpen(), S.stab or 100
+  box(LX, y, LW, 6, "СТАБИЛЬНОСТЬ", C.accent)
+  local x0, bw = LX + 2, LW - 4
+  for i = 1, bw do
+    local v = (i - 0.5) / bw * 100
+    fill(x0 + i - 1, y + 1, 1, 2, " ", C.text, zoneCol(v, not (open and not S.unknown and v <= stab)))
+  end
+  local xt = x0 + math.floor(P.target / 100 * bw)
+  local tb = zoneCol(P.target, not (open and not S.unknown and P.target <= stab))
+  put(xt, y + 1, "┃", C.white, tb); put(xt, y + 2, "┃", C.white, tb)
+  local function at(pct) return x0 + math.floor(pct / 100 * bw) end
+  put(x0, y + 3, "0", C.dim, C.panel); put(at(10) - 1, y + 3, "×4", C.z4, C.panel)
+  put(at(20), y + 3, "20", C.dim, C.panel); put(at(35) - 1, y + 3, "×2", C.z2, C.panel)
+  put(at(50), y + 3, "50", C.dim, C.panel); put(at(75) - 1, y + 3, "×1", C.z1, C.panel)
+  rput(x0 + bw - 1, y + 3, "100%", C.dim, C.panel)
+  put(xt, y + 4, "▲ цель " .. P.target .. "%", C.white, C.panel)
+end
+
+local function drawPanels(y)
+  local P = S.plan or makePlan(CFG)
+  local open = OPEN_PHASES[S.phase]
+  local w1 = math.floor((LW - 1) / 2)
+  local x, w = LX, w1
+  box(x, y, w, 9, "SPACETIME", C.accent)
+  local iw = w - 4
+  kv(x + 2, y + 1, iw, "Цена сейчас", S.stOn and (fmtL(drainCost((S.drains or 0) + 1)) .. " L/с") or "выкл", S.stOn and C.accent or C.dim)
+  local dbl = "—"
+  if open and not S.unknown and (S.drains or 0) > 0 then dbl = (30 - S.drains % 30) .. " сливов" end
+  kv(x + 2, y + 2, iw, "Удвоение цены через", dbl, C.text)
+  kv(x + 2, y + 3, iw, "Потрачено за цикл", S.unknown and "?" or (fmtL(S.cycleST or 0) .. " L"), C.text)
+  kv(x + 2, y + 4, iw, "План / с защитой " .. P.extra .. " с", fmtL(P.holdCost) .. " / " .. fmtL(P.fullCost) .. " L", C.text)
+  if hasStocker() then
+    local st = S.res.st or 0
+    kv(x + 2, y + 5, iw, "В стокере", fmtL(st) .. " L", st >= P.fullCost and C.green or C.red)
+    local cap = math.max(P.fullCost * 1.5, st, 1)
+    local bwid = iw
+    fill(x + 2, y + 6, bwid, 1, " ", C.text, C.faint)
+    local n = math.floor(math.min(1, st / cap) * bwid + 0.5)
+    if n > 0 then fill(x + 2, y + 6, n, 1, " ", C.text, st >= P.fullCost and C.green or C.red) end
+    local mark = x + 2 + math.floor(P.fullCost / cap * bwid)
+    put(math.min(mark, x + 1 + bwid), y + 6, "┃", C.white, C.faint)
+    put(x + 2, y + 7, "нужно на цикл ┃ " .. fmtL(P.fullCost) .. " L", C.faint, C.panel)
+  else
+    kv(x + 2, y + 5, iw, "Стокер", "нет (предохранитель снаружи)", C.dim)
+    kv(x + 2, y + 6, iw, "Фильтр предохранителя", "≥ " .. fmtL(math.ceil(P.fullCost * 1.5)) .. " L", C.dim)
+  end
+
+  x, w = LX + w1 + 1, LW - w1 - 1
+  box(x, y, w, 9, "МАШИНА", C.cyan)
+  iw = w - 4
+  local m = S.mach
+  local stxt, scol = "ПРОСТОЙ", C.dim
+  if not m.allowed then stxt, scol = "ОТКЛЮЧЕНА", C.orange elseif m.work then stxt, scol = "РАБОТАЕТ", C.cyan end
+  kv(x + 2, y + 1, iw, "Состояние", stxt, scol)
+  put(x + 2, y + 2, "Рецепт", C.dim, C.panel)
+  local bwid = iw - 14
+  fill(x + 10, y + 2, bwid, 1, " ", C.text, C.faint)
+  local nf = m.work and math.floor(m.frac * bwid + 0.5) or 0
+  if nf > 0 then fill(x + 10, y + 2, nf, 1, " ", C.text, C.cyan) end
+  rput(x + 2 + iw - 1, y + 2, m.work and (math.floor(m.frac * 100) .. "%") or "—", C.text, C.panel)
+  kv(x + 2, y + 3, iw, "Осталось", m.work and string.format("%.1f из %.1f с", m.rem, m.dur) or "—", C.text)
+  local par = "—"
+  if open and not S.unknown and S.stab > 0 then
+    local mm = zoneMult(S.stab)
+    par = "×" .. mm .. (mm == 4 and " · без дыры — без лимита" or "")
+  end
+  kv(x + 2, y + 4, iw, "Параллели", par, C.text)
+  local mr = CFG.stats.maxRecipe or 0
+  kv(x + 2, y + 5, iw, "Самый длинный рецепт", mr > 0 and string.format("%.1f с", mr) or "—", P.unprotectable and C.red or C.text)
+  kv(x + 2, y + 6, iw, "Spacetime-хэтч", S.stOn and "ВКЛ" or "ВЫКЛ", S.stOn and C.accent or C.dim)
+  kv(x + 2, y + 7, iw, "Входы в подсети", S.res.inputs and "есть" or "нет", S.res.inputs and C.green or C.dim)
+end
+
+local LEVEL = { ok = { "OK", C.green }, info = { "INFO", C.cyan }, warn = { "WARN", C.yellow }, err = { "ERR", C.red } }
+local function drawLog(y, h)
+  box(LX, y, LW, h, "СОБЫТИЯ", C.dim)
+  local iw = LW - 4
+  for i = 1, h - 2 do
+    local e = LOG[i]
+    if e then
+      local lv = LEVEL[e.k] or LEVEL.info
+      put(LX + 2, y + i, e.t, C.faint, C.panel)
+      put(LX + 11, y + i, lv[1], lv[2], C.panel)
+      put(LX + 16, y + i, fit(e.m, iw - 14), e.k == "err" and C.red or (e.k == "warn" and C.yellow or C.text), C.panel)
+    end
+  end
+end
+
+local function drawRight()
+  local P = S.plan or makePlan(CFG)
+  local w = W - RX
+  local open, stab = isOpen(), S.stab or 100
+  -- крупная стабильность
+  box(RX, 3, w, 12, "СТАБИЛЬНОСТЬ", C.accent)
+  local txt, col
+  if not open then txt, col = "-", C.faint
+  elseif S.unknown then txt, col = "?", C.orange
+  else txt, col = math.max(0, stab) .. "%", (stab <= 0) and C.red or zoneCol(stab) end
+  bigText(RX + math.floor((w - bigWidth(txt)) / 2), 5, txt, col, C.panel)
+  local mtxt = "дыра закрыта"
+  if open and not S.unknown and stab > 0 then mtxt = "×" .. zoneMult(stab) .. " параллели" elseif open and stab <= 0 and not S.unknown then mtxt = "НЕСТАБИЛЬНА" end
+  put(RX + math.floor((w - ulen(mtxt)) / 2), 11, mtxt, (open and stab <= 0) and C.red or C.text, C.panel)
+  local st
+  if not open then st = "цель " .. P.target .. "% · жизнь " .. P.maxRuntime .. " с"
+  elseif S.stOn then st = "▣ заморожена spacetime"
+  elseif not S.unknown and stab <= 0 then st = "рецепты войдятся!"
+  else st = "распад −1%/с · цель " .. P.target .. "%" end
+  put(RX + math.floor((w - ulen(st)) / 2), 12, st, S.stOn and C.accent or C.dim, C.panel)
+  -- ресурсы
+  box(RX, 16, w, 7, "РЕСУРСЫ", C.green)
+  local iw = w - 4
+  kv(RX + 2, 17, iw, "Seeds (слот " .. HW.seedSlot .. ")", tostring(S.res.seeds), S.res.seeds > 0 and C.text or C.red)
+  kv(RX + 2, 18, iw, "Collapsers (слот " .. HW.collapserSlot .. ")", tostring(S.res.coll), (S.res.coll > 0 or not CFG.useCollapser) and C.text or C.red)
+  kv(RX + 2, 19, iw, "Входы", S.res.inputs and "есть" or "нет", S.res.inputs and C.green or C.dim)
+  kv(RX + 2, 20, iw, "Машина", S.mach.allowed and "включена" or "отключена", S.mach.allowed and C.text or C.orange)
+  kv(RX + 2, 21, iw, "Стороны", HW_SOURCE == HW_PATH and "bhc-hw.cfg" or "по умолчанию", HW_SOURCE == HW_PATH and C.text or C.yellow)
+  -- сессия
+  box(RX, 24, w, 7, "СТАТИСТИКА", C.cyan)
+  local up = math.floor(computer.uptime() - (S.startedAt or 0))
+  kv(RX + 2, 25, iw, "Циклов / войдов", CFG.stats.cycles .. " / " .. CFG.stats.voids, CFG.stats.voids > 0 and C.yellow or C.text)
+  kv(RX + 2, 26, iw, "Spacetime всего", fmtL(CFG.stats.spacetime) .. " L", C.text)
+  kv(RX + 2, 27, iw, "Самый длинный рецепт", (CFG.stats.maxRecipe or 0) > 0 and string.format("%.1f с", CFG.stats.maxRecipe) or "—", C.text)
+  kv(RX + 2, 28, iw, "Лимит защиты цикла", P.extra .. " с (потолок " .. P.extraCap .. ")", P.unprotectable and C.red or C.text)
+  kv(RX + 2, 29, iw, "Время работы", string.format("%d ч %02d мин", math.floor(up / 3600), math.floor((up % 3600) / 60)), C.text)
+  -- кнопки
+  local by, bh = 32, 3
+  button(RX, by, w, bh, CFG.auto and "АВТО: ВКЛ" or "АВТО: ПАУЗА", C.white, CFG.auto and C.btnOn or C.btn, function()
     if S.alarm then S.alarm = nil; CFG.auto = true; log("Тревога сброшена, автоматика ВКЛ", "ok")
     else CFG.auto = not CFG.auto; log(CFG.auto and "Автоматика ВКЛ" or "Автоматика на паузе") end
     S.nextReady = 0
     saveCfg()
   end)
-  x = x + bw + gap
   local canOpen = S.phase == "IDLE"
-  button(x, by, bw, 3, "ОТКРЫТЬ СЕЙЧАС", canOpen and C.white or C.faint, canOpen and C.btnAcc or C.btn, function()
+  button(RX, by + 4, w, bh, "ОТКРЫТЬ СЕЙЧАС", canOpen and C.white or C.faint, canOpen and C.btnAcc or C.btn, function()
     if S.phase ~= "IDLE" then log("Дыра уже в работе", "warn"); return end
     openHole(true)
   end)
-  x = x + bw + gap
   local canClose = S.phase == "DECAY" or S.phase == "HOLD"
-  button(x, by, bw, 3, "ЗАКРЫТЬ СЕЙЧАС", canClose and C.white or C.faint, canClose and C.btnWarn or C.btn, function()
+  button(RX, by + 8, w, bh, "ЗАКРЫТЬ СЕЙЧАС", canClose and C.white or C.faint, canClose and C.btnWarn or C.btn, function()
     if S.phase == "DECAY" or S.phase == "HOLD" then beginClosing("Ручное закрытие")
     else log("Сейчас закрывать нечего", "warn") end
   end)
-  x = x + bw + gap
-  button(x, by, bw, 3, "НАСТРОЙКИ", C.white, C.btn, function()
-    S.draft = copy(CFG); S.screen = "settings"
-  end)
-  x = x + bw + gap
+  button(RX, by + 12, w, bh, "НАСТРОЙКИ", C.white, C.btn, function() S.draft = copy(CFG); S.screen = "settings" end)
   local armed = S.exitArmed and computer.uptime() - S.exitArmed < 3
-  button(x, by, W - 2 - x, 3, armed and "НАЖМИ ЕЩЁ РАЗ" or "ВЫХОД", C.white, armed and C.btnWarn or C.btn, function()
+  button(RX, by + 16, w, bh, armed and "НАЖМИ ЕЩЁ РАЗ" or "ВЫХОД", C.white, armed and C.btnWarn or C.btn, function()
     if S.exitArmed and computer.uptime() - S.exitArmed < 3 then S.running = false
     else S.exitArmed = computer.uptime() end
   end)
+end
+
+local function drawMain()
+  layoutCols()
+  drawHeader()
+  drawCycle(3)
+  drawStabBar(13)
+  drawPanels(20)
+  local s, col = statusLine()
+  put(LX, 30, "● ", col, C.bg)
+  put(LX + 2, 30, fit(s, LW - 24), col, C.bg)
+  rput(LX + LW - 1, 30, "Ctrl+Alt+C — выход", C.faint, C.bg)
+  drawLog(32, H - 32)
+  drawRight()
 end
 
 -- ---------- экран настроек ----------
@@ -1032,20 +1041,16 @@ local function drawSettings()
   drawHeader()
   local D = S.draft
   put(3, 3, "НАСТРОЙКИ ЦИКЛА", C.accent, C.bg)
-  if S.phase ~= "IDLE" then
-    put(22, 3, "· изменения применятся со следующего цикла", C.yellow, C.bg)
-  end
+  if S.phase ~= "IDLE" then put(22, 3, "· изменения применятся со следующего цикла", C.yellow, C.bg) end
 
   local function stepper(y, label, key, steps, hint, hintCol)
     put(4, y, label, C.text, C.bg)
-    local x = 68                                   -- колонка значений
+    local x = 68
     for i = 1, #steps do x = x - (ulen("−" .. steps[i]) + 3) end
     for i = #steps, 1, -1 do
       local st = steps[i]
       local t = "−" .. st
-      button(x, y, ulen(t) + 2, 1, t, C.white, C.btn, function()
-        D[key] = clamp(D[key] - st, LIMITS[key][1], LIMITS[key][2])
-      end)
+      button(x, y, ulen(t) + 2, 1, t, C.white, C.btn, function() D[key] = clamp(D[key] - st, LIMITS[key][1], LIMITS[key][2]) end)
       x = x + ulen(t) + 3
     end
     local v = tostring(D[key])
@@ -1054,74 +1059,63 @@ local function drawSettings()
     for i = 1, #steps do
       local st = steps[i]
       local t = "+" .. st
-      button(x, y, ulen(t) + 2, 1, t, C.white, C.btn, function()
-        D[key] = clamp(D[key] + st, LIMITS[key][1], LIMITS[key][2])
-      end)
+      button(x, y, ulen(t) + 2, 1, t, C.white, C.btn, function() D[key] = clamp(D[key] + st, LIMITS[key][1], LIMITS[key][2]) end)
       x = x + ulen(t) + 3
     end
     if hint then put(x + 2, y, hint, hintCol or C.dim, C.bg) end
   end
-
   local function toggle(x, y, label, key)
     put(x, y, label, C.text, C.bg)
     local bx = x + ulen(label) + 2
-    button(bx, y, 8, 1, D[key] and "ВКЛ" or "ВЫКЛ", C.white, D[key] and C.btnOn or C.btnWarn, function()
-      D[key] = not D[key]
-    end)
+    button(bx, y, 8, 1, D[key] and "ВКЛ" or "ВЫКЛ", C.white, D[key] and C.btnOn or C.btnWarn, function() D[key] = not D[key] end)
     return bx + 12
   end
 
   local P = makePlan(D)
-  stepper(4, "Время жизни дыры, с (включая базовые 100)", "maxRuntime", { 1, 10, 50 },
+  stepper(6, "Время жизни дыры, с (включая базовые 100)", "maxRuntime", { 1, 10, 50 },
     P.hold > 0 and ("стабилизация " .. P.hold .. " с") or "без spacetime")
   local m = zoneMult(D.targetStability)
-  stepper(6, "Целевая стабильность, %", "targetStability", { 1, 5 },
-    "×" .. m .. " параллели", m == 4 and C.z4 or (m == 2 and C.z2 or C.z1))
-  stepper(8, "Мин. лимит доп. стабилизации (защита), с", "protectMaxSec", { 1, 5, 30 },
-    "в цикле сейчас: " .. P.extra .. " с")
-  stepper(10, "Потолок авто-лимита защиты, с", "protectAutoCap", { 5, 30 },
+  stepper(9, "Целевая стабильность, %", "targetStability", { 1, 5 }, "×" .. m .. " параллели", m == 4 and C.z4 or (m == 2 and C.z2 or C.z1))
+  stepper(12, "Мин. лимит доп. стабилизации (защита), с", "protectMaxSec", { 1, 5, 30 }, "в цикле сейчас: " .. P.extra .. " с")
+  stepper(15, "Потолок авто-лимита защиты, с", "protectAutoCap", { 5, 30 },
     D.autoProtect and "по самому длинному рецепту" or "авто-лимит выключен", D.autoProtect and C.dim or C.faint)
-  stepper(12, "Запас по времени для защиты, с", "safetyMargin", { 1 })
-  stepper(14, "Раннее закрытие: нет входов и простой, с", "earlyCloseSec", { 1, 5 },
-    D.earlyCloseSec > 0 and "экономит spacetime" or "выключено", D.earlyCloseSec > 0 and C.dim or C.faint)
-  local tx = toggle(4, 16, "Защита от войда", "voidProtection")
-  tx = toggle(tx, 16, "Авто-лимит защиты", "autoProtect")
-  toggle(tx, 16, "Закрывать collapser'ом", "useCollapser")
+  stepper(18, "Запас по времени для защиты, с", "safetyMargin", { 1 })
+  stepper(21, "Раннее закрытие: нет входов и простой, с", "earlyCloseSec", { 1, 5, 30 },
+    D.earlyCloseSec > 0 and "меньше — меньше spacetime, больше seed" or "выключено", D.earlyCloseSec > 0 and C.dim or C.faint)
+  local tx = toggle(4, 24, "Защита от войда", "voidProtection")
+  tx = toggle(tx, 24, "Авто-лимит защиты", "autoProtect")
+  toggle(tx, 24, "Закрывать collapser'ом", "useCollapser")
 
-  box(3, 17, W - 4, 4, "СВОДКА", C.accent)
-  local l1 = ("Распад до %d%% за %d с → стабилизация %d с (%d–%d с) → collapser на %d с → закрытие после рецепта")
-    :format(D.targetStability, P.holdStart, P.hold, P.holdStart, P.closeAt, P.closeAt)
-  put(5, 18, fit(l1, W - 8), C.text, C.panel)
-  local l2 = ("Spacetime: %s L/цикл (пик %s L/с) · с защитой %d с до %s L (пик %s L/с) · фильтр стокера/предохранителя ≥ %s L")
-    :format(fmtL(P.holdCost), fmtL(P.peak), P.extra, fmtL(P.fullCost), fmtL(P.fullPeak),
-      fmtL(math.ceil(P.fullCost * 1.5)))
-  put(5, 19, fit(l2, W - 8), C.text, C.panel)
+  box(3, 27, W - 4, 5, "СВОДКА", C.accent)
+  put(5, 28, fit(("Распад до %d%% за %d с → стабилизация %d с (%d–%d с) → collapser на %d с → закрытие после рецепта")
+    :format(D.targetStability, P.holdStart, P.hold, P.holdStart, P.closeAt, P.closeAt), W - 8), C.text, C.panel)
+  put(5, 29, fit(("Spacetime: %s L/цикл (пик %s L/с) · с защитой %d с до %s L (пик %s L/с) · фильтр стокера/предохранителя ≥ %s L")
+    :format(fmtL(P.holdCost), fmtL(P.peak), P.extra, fmtL(P.fullCost), fmtL(P.fullPeak), fmtL(math.ceil(P.fullCost * 1.5))), W - 8), C.text, C.panel)
+  put(5, 30, fit(D.earlyCloseSec > 0 and ("Раннее закрытие: дыра закрывается, если %d с нет входов и машина простаивает"):format(D.earlyCloseSec)
+    or "Раннее закрытие выключено: дыра живёт весь срок, даже без входов", W - 8), C.dim, C.panel)
 
   local warn, wcol = "", C.yellow
   local mr = CFG.stats.maxRecipe or 0
-  if P.unprotectable then
-    warn, wcol = ("Рецепт %.0f с не спасти: защиты нужно больше потолка %d с"):format(mr, P.extraCap), C.red
+  if P.unprotectable then warn, wcol = ("Рецепт %.0f с не спасти: защиты нужно больше потолка %d с"):format(mr, P.extraCap), C.red
   elseif D.targetStability >= 50 then warn = "Цель ≥ 50%: параллели без бонуса."
   elseif D.targetStability >= 20 then warn = "Цель ≥ 20%: только ×2 параллели." end
-  put(3, 21, fit(warn, 80), wcol, C.bg)
-  local rtxt = mr > 0 and ("Самый длинный рецепт: %.1f с"):format(mr) or "Рецепты ещё не замерены"
-  rput(W - 15, 21, rtxt, C.dim, C.bg)
-  button(W - 13, 21, 12, 1, "сбросить", C.white, C.btn, function()
+  put(3, 33, fit(warn, 90), wcol, C.bg)
+  rput(W - 15, 33, mr > 0 and ("Самый длинный рецепт: %.1f с"):format(mr) or "Рецепты ещё не замерены", C.dim, C.bg)
+  button(W - 13, 33, 12, 1, "сбросить", C.white, C.btn, function()
     CFG.stats.maxRecipe = 0
     if D.stats then D.stats.maxRecipe = 0 end
-    saveCfg()
-    log("Замер длины рецептов сброшен")
+    saveCfg(); log("Замер длины рецептов сброшен")
   end)
 
-  local bw = 30
-  button(3, 22, bw, 3, "СОХРАНИТЬ", C.white, C.btnOn, function()
+  local bw, by = 40, 37
+  button(3, by, bw, 3, "СОХРАНИТЬ", C.white, C.btnOn, function()
     local stats = CFG.stats
     CFG = S.draft; CFG.stats = stats
     saveCfg(); S.screen = "main"; S.nextReady = 0
     log(("Настройки: жизнь %d с, цель %d%%"):format(CFG.maxRuntime, CFG.targetStability), "ok")
   end)
-  button(3 + bw + 1, 22, bw, 3, "ОТМЕНА", C.white, C.btn, function() S.screen = "main" end)
-  button(3 + (bw + 1) * 2, 22, bw, 3, "ПО УМОЛЧАНИЮ", C.white, C.btnWarn, function()
+  button(3 + bw + 1, by, bw, 3, "ОТМЕНА", C.white, C.btn, function() S.screen = "main" end)
+  button(3 + (bw + 1) * 2, by, bw, 3, "ПО УМОЛЧАНИЮ", C.white, C.btnWarn, function()
     local keep = { auto = D.auto, stats = D.stats }
     S.draft = copy(DEFAULTS); S.draft.auto = keep.auto; S.draft.stats = keep.stats
   end)
@@ -1185,6 +1179,7 @@ local function main()
   safe(rs.setOutput, HW.transmitterSide, 0)
   S.stOn, S.stChangedAt = false, -100
   S.grace = computer.uptime() + HW.pulseTimeout   -- если дыра уже открыта — поймаем импульс
+  S.startedAt = computer.uptime()
   log("BHC Control " .. VERSION .. " запущен", "ok")
   log("Стороны: " .. HW_SOURCE, HW_SOURCE == HW_PATH and "info" or "warn")
   if not hasStocker() then log("Стокера нет: запас spacetime не проверяется (предохранитель у хэтча)", "info") end

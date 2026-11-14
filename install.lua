@@ -172,7 +172,7 @@ local function checkHardware()
   line("screen", scrOk, "экран T3")
   if gpuOk then
     local w, h = component.gpu.maxResolution()
-    line("разрешение", w >= 128 and h >= 24, ("нужно 128×24, есть %d×%d — нужны GPU и экран T3"):format(w, h))
+    line("разрешение", w >= 160 and h >= 50, ("нужно 160×50, есть %d×%d — нужны GPU и экран T3"):format(w, h))
   end
   return okAll
 end

@@ -275,7 +275,7 @@ elseif scenario == "starve" then
 elseif scenario == "screen" then
   SIM.stopAt = 20 * 200
   dumpAt[20 * 150] = "main"
-  touch(20 * 160, 80, 23)               -- НАСТРОЙКИ (4-я кнопка)
+  touch(20 * 160, 135, 45)              -- НАСТРОЙКИ
   dumpAt[20 * 162] = "settings"
 elseif scenario == "burst" then
   -- автокрафт мелкими партиями: 3 рецепта, пауза, ещё 4 — раннее закрытие
@@ -305,10 +305,10 @@ elseif scenario == "huge" then
 elseif scenario == "touch" then
   -- НАСТРОЙКИ → «+10» к времени жизни → СОХРАНИТЬ; затем ЗАКРЫТЬ СЕЙЧАС во время распада
   SIM.stopAt = 20 * 260
-  touch(20 * 5, 80, 23)
-  touch(20 * 6, 82, 4)
-  touch(20 * 7, 10, 23)
-  touch(20 * 230, 55, 23)
+  touch(20 * 5, 135, 45)
+  touch(20 * 6, 82, 6)
+  touch(20 * 7, 10, 38)
+  touch(20 * 230, 135, 41)
 end
 
 for t, name in pairs(dumpAt) do
