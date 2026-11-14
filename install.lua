@@ -296,12 +296,6 @@ local function setupSides()
       if inv.side ~= hw.interfaceSide and inv.side ~= hw.stockerSide then others[#others + 1] = inv.side end
     end
     if #others == 1 then hw.busSide = others[1] end
-    for _, inv in ipairs(r.inventories) do
-      if inv.side == hw.busSide and inv.size > 17 then
-        say(("  ВНИМАНИЕ: у %s %d слотов — обычный Input Bus столько не имеет (максимум 16 + схема)."):format(sideName(inv.side), inv.size))
-        say("  Под transposer'ом должен стоять обычный Input Bus, встроенный в стену BHC (не ME-шина и не buffer).")
-      end
-    end
     if not r.interface then say("  ME interface не найден: положи в него seed (слот 1) и collapser (слот 2) или укажи вручную.") end
     if not r.stocker then say("  Стокер со spacetime не найден: проверь, что в нём есть spacetime, или укажи вручную.") end
   else
