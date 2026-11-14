@@ -2,7 +2,9 @@
 -- Моделирует BHC по логике MTEBlackHoleCompressor.java потиково и мокает
 -- component / computer / event / gpu OpenComputers.
 --
---   lua5.3 tests/sim.lua <сценарий>     сценарии: basic, long, recovery, starve, screen
+--   lua5.3 tests/sim.lua <сценарий>
+--   сценарии: basic, long, recovery, starve, touch, screen, burst, longrecipe, longlow, seedretry, nopulse, huge
+--   BHC_SHOW_LOG=1 — вывести журнал программы; BHC_DUMP_DIR=dir — сохранить экраны для tests/render.py
 
 local scenario = arg[1] or "basic"
 local unpack = table.unpack
@@ -16,6 +18,11 @@ local M = {
   recipeTicks = 313, inputs = math.huge,
   seeds = 20, colls = 20, stStock = 1000,
   cycles = {}, curCycle = nil,
+  -- 2.9: простаивающий BHC проверяет рецепты только по событиям (scheduleRecipeCheck):
+  -- изменение input bus, новые входы, hasWorkJustBeenEnabled, конец рецепта
+  checkPending = true,
+  ignoreBusEvent = 0,   -- сколько вставок в bus «потерять» (для теста повторов)
+  noPulses = false,     -- utility hatch не подключён / не та сторона
 }
 local SIM = { tick = 0, queue = {}, stopAt = 20 * 700, rsOut = {}, rsIn = {}, outHist = {}, script = {} }
 for _, s in pairs(SIDES) do SIM.rsOut[s] = 0; SIM.rsIn[s] = 0 end
@@ -62,6 +69,11 @@ local function check()
   end
 end
 
+local function addInputs(n)
+  M.inputs = M.inputs + n
+  M.checkPending = true                 -- ME stocking bus → scheduleRecipeCheck
+end
+
 local function machineTick()
   if M.maxProg > 0 then
     M.prog = M.prog + 1
@@ -74,7 +86,8 @@ local function machineTick()
       M.maxProg, M.prog, M.voidCur = 0, 0, false
       if M.works then check() end
     end
-  elseif M.works then
+  elseif M.works and M.checkPending then
+    M.checkPending = false
     check()
   end
   setIn(RX, M.inputs > 0 and 15 or 0)
@@ -82,7 +95,7 @@ local function machineTick()
   if M.status == 1 then return end
   if SIM.tick % 20 == 5 then setIn(HATCH, 0) end
   if SIM.tick % 20 ~= 0 then return end
-  setIn(HATCH, 15)
+  if not M.noPulses then setIn(HATCH, 15) end
   local dec = 1
   if M.stab > 0 and hatchEnabled() then
     M.stConsumed = M.stConsumed + M.costMod
@@ -146,7 +159,10 @@ local comps = {
     hasWork = function() return M.maxProg > 0 end,
     getWorkProgress = function() return M.prog end,
     getWorkMaxProgress = function() return M.maxProg end,
-    setWorkAllowed = function(v) M.works = v end,
+    setWorkAllowed = function(v)
+      if v and not M.works then M.checkPending = true end   -- hasWorkJustBeenEnabled
+      M.works = v
+    end,
     isWorkAllowed = function() return M.works end,
   },
   redstone = {
@@ -156,6 +172,11 @@ local comps = {
   },
   transposer = {
     getStackInSlot = function(side, slot)
+      if side == BUS then
+        local it = M.bus[slot]
+        if not it then return nil end
+        return { size = 1, label = it == "seed" and "Black Hole Seed" or "Black Hole Collapser" }
+      end
       if side ~= IFACE then return nil end
       local n = slot == 1 and M.seeds or (slot == 2 and M.colls or 0)
       if n > 0 then return { size = n, label = slot == 1 and "Black Hole Seed" or "Black Hole Collapser" } end
@@ -164,10 +185,16 @@ local comps = {
     getFluidInTank = function(side) if side == STOCK then return { amount = M.stStock, name = "spacetime" } end end,
     transferItem = function(src, dst, count, slot)
       if src ~= IFACE or dst ~= BUS then return 0 end
-      if slot == 1 and M.seeds > 0 then M.seeds = M.seeds - 1; M.bus[#M.bus + 1] = "seed"; return 1 end
-      if slot == 2 and M.colls > 0 then M.colls = M.colls - 1; M.bus[#M.bus + 1] = "coll"; return 1 end
-      return 0
+      local item
+      if slot == 1 and M.seeds > 0 then M.seeds = M.seeds - 1; item = "seed" end
+      if slot == 2 and M.colls > 0 then M.colls = M.colls - 1; item = "coll" end
+      if not item then return 0 end
+      M.bus[#M.bus + 1] = item
+      if M.ignoreBusEvent > 0 then M.ignoreBusEvent = M.ignoreBusEvent - 1
+      else M.checkPending = true end                       -- MTEHatchInputBus.notifyWatchers
+      return 1
     end,
+    getInventorySize = function(side) if side == BUS then return 16 end return nil end,
   },
   gpu = gpuMock, screen = {},
 }
@@ -249,11 +276,36 @@ elseif scenario == "screen" then
   dumpAt[20 * 150] = "main"
   touch(20 * 160, 80, 23)               -- НАСТРОЙКИ (4-я кнопка)
   dumpAt[20 * 162] = "settings"
+elseif scenario == "burst" then
+  -- автокрафт мелкими партиями: 3 рецепта, пауза, ещё 4 — раннее закрытие
+  M.inputs = 3
+  SIM.stopAt = 20 * 400
+  SIM.script[20 * 150] = function() addInputs(4) end
+elseif scenario == "longrecipe" then
+  -- 85 с: к закрытию остаётся ~74 с, стокер большой: авто-лимит + расширение на лету
+  M.recipeTicks, M.stStock = 1700, 100000
+  SIM.stopAt = 20 * 700
+elseif scenario == "longlow" then
+  -- 85 с, но стокер 1000 L: расширить нельзя → предупреждение, следующий цикл блокируется
+  M.recipeTicks, M.stStock = 1700, 1000
+  SIM.stopAt = 20 * 500
+elseif scenario == "seedretry" then
+  -- первые две вставки seed не вызвали проверку рецепта → повтор через выкл/вкл машины
+  M.ignoreBusEvent = 1
+  SIM.stopAt = 20 * 60
+elseif scenario == "nopulse" then
+  -- utility hatch не на той стороне: seed принят, импульсов нет → тревога + collapser
+  M.noPulses = true
+  SIM.stopAt = 20 * 60
+elseif scenario == "huge" then
+  -- 900 с (SD MHDCSM / Blank Computational Singularity): спасти нельзя — предупреждение, без падений
+  M.recipeTicks, M.stStock = 18000, 1000
+  SIM.stopAt = 20 * 1300
 elseif scenario == "touch" then
   -- НАСТРОЙКИ → «+10» к времени жизни → СОХРАНИТЬ; затем ЗАКРЫТЬ СЕЙЧАС во время распада
   SIM.stopAt = 20 * 260
   touch(20 * 5, 80, 23)
-  touch(20 * 6, 82, 5)
+  touch(20 * 6, 82, 4)
   touch(20 * 7, 10, 23)
   touch(20 * 230, 55, 23)
 end
@@ -287,6 +339,10 @@ package.preload.event = function()
   return ev
 end
 
+local EVENTS = {}
+BHC_ON_LOG = function(msg, kind)
+  EVENTS[#EVENTS + 1] = ("  %6.1f с [%s] %s"):format(SIM.tick / 20, kind or "info", msg)
+end
 dofile("bhc.lua")
 
 -- ---------------- отчёт ----------------
@@ -302,6 +358,12 @@ print(("seeds: %d, collapsers: %d, в bus осталось: %d, status=%d, works
 local f = io.open(BHC_CFG_PATH)
 if f then print("cfg: " .. f:read("*a")); f:close() end
 os.remove(BHC_CFG_PATH)
+if os.getenv("BHC_SHOW_LOG") then
+  print("журнал программы:"); print(table.concat(EVENTS, "\n"))
+  local row = {}
+  for x = 1, scrW do local c = screen[21] and screen[21][x]; row[x] = c and c[1] or " " end
+  print("строка статуса: " .. table.concat(row):gsub("%s+$", ""))
+end
 for _, d in ipairs(dumps) do
   print("\n----- экран: " .. d[1] .. " -----")
   print(d[2])

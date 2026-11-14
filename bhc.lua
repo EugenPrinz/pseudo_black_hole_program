@@ -40,7 +40,8 @@ local HW = {
   resolution      = {128, 24},   -- под экран T3 5×2
   stLatency       = 0.4,         -- с: сколько нужно хэтчу, чтобы включиться (cover 5 тиков + запас)
   pulseTimeout    = 2.5,         -- с без импульсов → дыра закрыта
-  openTimeout     = 30,          -- с: seed не принят за это время → тревога
+  openAttemptSec  = 10,          -- с на одну попытку открытия (seed должен быть принят)
+  openAttempts    = 3,           -- попыток до тревоги (повтор = выкл/вкл машины → проверка рецепта)
   collapseDelay   = 3,           -- с паузы после закрытия (анимация схлопывания)
 }
 local CFG_PATH = BHC_CFG_PATH or "/home/bhc.cfg"   -- luacheck: ignore (глобал для тестов)
@@ -50,15 +51,19 @@ local DEFAULTS = {
   maxRuntime      = 200,   -- с, полное время жизни дыры (включая базовые 100)
   targetStability = 18,    -- %, на которой замораживаем распад
   voidProtection  = true,  -- держать стабильность до конца последнего рецепта
-  protectMaxSec   = 30,    -- с, максимум доп. стабилизации ради защиты
+  protectMaxSec   = 30,    -- с, минимальный лимит доп. стабилизации ради защиты
+  autoProtect     = true,  -- поднимать лимит под самый длинный замеченный рецепт
+  protectAutoCap  = 120,   -- с, потолок авто-лимита
   safetyMargin    = 2,     -- с, запас по времени для защиты
+  earlyCloseSec   = 10,    -- с: нет входов и машина простаивает → закрыть раньше (0 — выкл)
   useCollapser    = true,  -- закрывать collapser'ом (иначе — ждать ~15 мин)
   auto            = true,  -- автоматически открывать дыру
-  stats = { cycles = 0, spacetime = 0, voids = 0 },
+  stats = { cycles = 0, spacetime = 0, voids = 0, maxRecipe = 0 },
 }
 local LIMITS = {
   maxRuntime = {100, 1150}, targetStability = {1, 99},
-  protectMaxSec = {0, 600}, safetyMargin = {0, 20},
+  protectMaxSec = {0, 600}, protectAutoCap = {0, 600},
+  safetyMargin = {0, 20}, earlyCloseSec = {0, 120},
 }
 
 local unpack = table.unpack or unpack
@@ -121,12 +126,26 @@ local function totalCost(n)              -- сумма первых n сливо
   return sum
 end
 
+-- Лимит доп. стабилизации ради защиты: минимум protectMaxSec; с авто-лимитом —
+-- сколько нужно самому длинному замеченному рецепту, но не выше потолка.
+local function protectLimits(cfg)
+  if not cfg.voidProtection then return 0, 0, 0 end
+  local cap = cfg.autoProtect and math.max(cfg.protectMaxSec, cfg.protectAutoCap) or cfg.protectMaxSec
+  local maxRecipe = (cfg.stats and cfg.stats.maxRecipe) or 0
+  local need = math.max(0, math.ceil(maxRecipe + cfg.safetyMargin - cfg.targetStability))
+  local extra = cfg.protectMaxSec
+  if cfg.autoProtect then extra = math.max(extra, math.min(need, cap)) end
+  return extra, cap, need
+end
+
 local function makePlan(cfg)
   local hold  = math.max(0, cfg.maxRuntime - 100)
-  local extra = cfg.voidProtection and cfg.protectMaxSec or 0
+  local extra, cap, need = protectLimits(cfg)
   return {
     maxRuntime = cfg.maxRuntime, target = cfg.targetStability,
     voidProtection = cfg.voidProtection, useCollapser = cfg.useCollapser,
+    autoProtect = cfg.autoProtect, earlyClose = cfg.earlyCloseSec,
+    extraCap = cap, unprotectable = cfg.voidProtection and need > cap,
     margin = cfg.safetyMargin, extra = extra, hold = hold,
     holdStart = 100 - cfg.targetStability,
     closeAt   = 100 - cfg.targetStability + hold,
@@ -212,6 +231,23 @@ local function insert(slot)
   return (tonumber(n) or 0) > 0
 end
 
+-- Что лежит в input bus: seeds, collapsers (nil — bus не читается, проверь busSide)
+local function busScan()
+  local size = tonumber(safe(tp.getInventorySize, HW.busSide))
+  if not size then return nil end
+  local seeds, colls = 0, 0
+  for i = 1, size do
+    local st = safe(tp.getStackInSlot, HW.busSide, i)
+    if type(st) == "table" then
+      local l = string.lower(tostring(st.label or st.name or ""))
+      local n = tonumber(st.size) or 1
+      if l:find("collaps") or l:find("closer") then colls = colls + n
+      elseif l:find("seed") or l:find("opener") then seeds = seeds + n end
+    end
+  end
+  return seeds, colls
+end
+
 -- ============================== СОСТОЯНИЕ ==============================
 local PHASES = { "IDLE", "OPENING", "DECAY", "HOLD", "CLOSING", "COLLAPSE" }
 local PHASE_RU = {
@@ -234,6 +270,7 @@ local function log(msg, kind)
   table.insert(LOG, 1, { t = os.date("%H:%M:%S"), m = msg, k = kind or "info" })
   while #LOG > 40 do table.remove(LOG) end
   S.dirty = true
+  if BHC_ON_LOG then BHC_ON_LOG(msg, kind) end   -- luacheck: ignore (хук для тестов, в OC = nil)
 end
 
 local function resetCycle()
@@ -241,7 +278,7 @@ local function resetCycle()
   S.history = {}
   S.unknown, S.collapserIn, S.disabled = false, false, false
   S.unstableLogged, S.voidLogged, S.limitLogged, S.protectLogged = false, false, false, false
-  S.prevPhase = nil
+  S.prevPhase, S.idleSince, S.openAttempt = nil, nil, 0
 end
 
 local function setST(on)
@@ -268,6 +305,13 @@ local function pollMachine()
   local m = S.mach
   m.work, m.allowed = mWork(), mAllowed()
   m.rem, m.dur, m.frac = mRemain()
+  S.res.inputs = (tonumber(safe(rs.getInput, HW.receiverSide)) or 0) > 0
+  -- самый длинный рецепт (реальная длительность с разгоном/batch) — для авто-лимита защиты
+  if m.work and m.dur > (CFG.stats.maxRecipe or 0) + 0.05 then
+    CFG.stats.maxRecipe = m.dur
+    log(("Самый длинный рецепт: %.1f с"):format(m.dur), "info")
+    saveCfg()
+  end
 end
 
 local function pollRes()
@@ -286,28 +330,52 @@ local function ready(manual)
     return false, "Нет Black Hole Collapser в ME interface (слот " .. HW.collapserSlot .. ")"
   end
   if p.fullCost > 0 and S.res.st < p.fullCost then
-    return false, ("Мало spacetime: нужно %s L, в стокере %s L"):format(fmtL(p.fullCost), fmtL(S.res.st))
+    return false, ("Мало spacetime: нужно %s L (защита %d с), в стокере %s L — фильтр стокера ≥ %s L")
+      :format(fmtL(p.fullCost), p.extra, fmtL(S.res.st), fmtL(math.ceil(p.fullCost * 1.5)))
   end
   return true, "Готов к открытию дыры"
 end
 
 -- ============================ ЛОГИКА ЦИКЛА ============================
+-- Рецепт длиннее, чем покрывает текущий лимит: пробуем расширить защиту на лету
+-- (только с авто-лимитом, в пределах потолка и если в стокере хватает spacetime).
+local function tryExtend(rem)
+  local P = S.plan
+  if S.unknown or not P.autoProtect then return false end
+  local k = math.ceil(rem + P.margin - S.stab)          -- сколько ещё сливов нужно
+  if k <= 0 then return false end
+  local total = S.extraDrains + k
+  if total > P.extraCap then
+    log(("Рецепту нужно %d с защиты, потолок %d с"):format(total, P.extraCap), "err")
+    return false
+  end
+  local add = totalCost(S.drains + k) - totalCost(S.drains)
+  local st = stockAmount()
+  if st < add then
+    log(("Расширить защиту нельзя: нужно %s L, есть %s L"):format(fmtL(add), fmtL(st)), "err")
+    return false
+  end
+  P.extra = total
+  log(("Защита расширена до %d с (+%s L)"):format(total, fmtL(add)), "warn")
+  return true
+end
+
 local function protect()
   local P = S.plan
   if not P.voidProtection then setST(false); return end
   if not S.unknown and S.stab <= 0 then setST(false); return end
-  local need = false
+  local need, rem = false, 0
   if mWork() then
-    local rem = mRemain()
+    rem = mRemain()
     need = S.unknown or (rem + P.margin >= S.stab)
   end
-  if need and S.extraDrains >= P.extra then
-    if not S.limitLogged then
+  if need and S.extraDrains >= P.extra and not S.limitLogged then
+    if not tryExtend(rem) then
       S.limitLogged = true
-      log("Лимит защиты исчерпан", "warn")
+      log("Лимит защиты исчерпан — рецепт может войднуться", "warn")
     end
-    need = false
   end
+  if need and S.extraDrains >= P.extra then need = false end
   if need and not S.protectLogged then
     S.protectLogged = true
     log("Защита: держим до конца рецепта", "warn")
@@ -349,18 +417,56 @@ local function startRecovery(reason)
   protect()
 end
 
+-- Простой машины в фазе ОТКРЫТИЕ: выкл/вкл работу → hasWorkJustBeenEnabled → проверка рецепта
+-- (в 2.9 простаивающий BHC проверяет рецепты только по событиям).
+local function kickMachine()
+  setAllowed(false)
+  setAllowed(true)
+end
+
 local function openHole(manual)
   pollRes()
   local ok, why = ready(manual)
   if not ok then log(why, "warn"); return false end
   resetCycle()
   S.plan = makePlan(CFG)
-  if not insert(HW.seedSlot) then log("Не удалось переместить seed в input bus", "err"); return false end
   setAllowed(true)
+  local seedsInBus = busScan()
+  if seedsInBus and seedsInBus > 0 then
+    log("В input bus уже лежит seed — повторно не вставляю", "warn")
+    kickMachine()
+  elseif not insert(HW.seedSlot) then
+    log("Не удалось переместить seed в input bus", "err")
+    return false
+  end
   S.phase = "OPENING"
   S.openingAt = computer.uptime()
+  S.openAttempt = 1
   log(("Seed: цель %d%%, жизнь %d с"):format(S.plan.target, S.plan.maxRuntime), "ok")
   return true
+end
+
+local function openingTimeout(now)
+  local seeds = busScan()
+  if seeds == nil then
+    alarm("Не читается input bus (проверь HW.busSide) и дыра не открылась")
+    S.phase = "IDLE"
+  elseif seeds > 0 then
+    if S.openAttempt < HW.openAttempts then
+      S.openAttempt = S.openAttempt + 1
+      S.openingAt = now
+      log(("Seed не принят, повтор %d/%d"):format(S.openAttempt, HW.openAttempts), "warn")
+      kickMachine()
+    else
+      alarm("Seed лежит в bus, машина его не берёт (структура, питание, maintenance?)")
+      S.phase = "IDLE"
+    end
+  else
+    -- seed забран, но импульсов нет: дыра открыта без контроля — закрываем
+    alarm("Seed принят, но импульсов нет — проверь utility hatch (PULSE) и HW.hatchSide")
+    if CFG.useCollapser then insert(HW.collapserSlot) end
+    S.phase = "IDLE"
+  end
 end
 
 local function decide()
@@ -441,6 +547,18 @@ local function finishCycle(now)
   S.nextReady = now + 2
 end
 
+-- Раннее закрытие: входов нет и машина простаивает earlyClose секунд подряд
+local function checkEarlyClose(now)
+  local P = S.plan
+  if P.earlyClose <= 0 or S.unknown then S.idleSince = nil; return end
+  if S.res.inputs or S.mach.work then S.idleSince = nil; return end
+  S.idleSince = S.idleSince or now
+  if now - S.idleSince >= P.earlyClose then
+    S.idleSince = nil
+    beginClosing(("Входов нет %d с"):format(P.earlyClose))
+  end
+end
+
 local function tick(now)
   local ph = S.phase
   if ph == "IDLE" then
@@ -448,13 +566,13 @@ local function tick(now)
       S.nextReady = now + 2
       local ok, why = ready(false)
       S.readyOk, S.readyMsg = ok, why
+      -- причины блокировки (кроме обычного «нет входов») пишем в журнал один раз
+      if not ok and why ~= S.lastBlock and not why:find("Нет входов") then log(why, "warn") end
+      S.lastBlock = (not ok) and why or nil
       if ok and CFG.auto and not S.alarm then openHole(false) end
     end
   elseif ph == "OPENING" then
-    if now - S.openingAt > HW.openTimeout then
-      alarm("Seed не принят машиной за " .. HW.openTimeout .. " с (проверь входы и input bus)")
-      S.phase = "IDLE"
-    end
+    if now - S.openingAt > HW.openAttemptSec then openingTimeout(now) end
   elseif OPEN_PHASES[ph] then
     if now - S.lastPulse > HW.pulseTimeout then
       setST(false)
@@ -471,6 +589,8 @@ local function tick(now)
       end
     elseif ph == "CLOSING" or ph == "RECOVERY" then
       protect()
+    else
+      checkEarlyClose(now)
     end
   elseif ph == "COLLAPSE" then
     if now - S.collapseAt >= HW.collapseDelay then finishCycle(now) end
@@ -746,7 +866,7 @@ local function drawPanels()
   if open and not S.unknown and (S.drains or 0) > 0 then dbl = (30 - S.drains % 30) .. " сл." end
   kv(x + 2, y + 2, iw, "Удвоение через", dbl, C.text)
   kv(x + 2, y + 3, iw, "За этот цикл", S.unknown and "?" or (fmtL(S.cycleST or 0) .. " L"), C.text)
-  kv(x + 2, y + 4, iw, "План/защита",fmtL(P.holdCost) .. " / " .. fmtL(P.fullCost) .. " L", C.text)
+  kv(x + 2, y + 4, iw, "План/+" .. P.extra .. "с", fmtL(P.holdCost) .. " / " .. fmtL(P.fullCost) .. " L", C.text)
   kv(x + 2, y + 5, iw, "В стокере", fmtL(S.res.st) .. " L", S.res.st >= P.fullCost and C.green or C.red)
 
   -- МАШИНА
@@ -767,7 +887,9 @@ local function drawPanels()
   local par = "—"
   if open and not S.unknown and S.stab > 0 then par = "×" .. zoneMult(S.stab) end
   kv(x + 2, y + 4, iw, "Параллели", par, C.text)
-  kv(x + 2, y + 5, iw, "Spacetime-хэтч", S.stOn and "ВКЛ" or "ВЫКЛ", S.stOn and C.accent or C.dim)
+  local mr = CFG.stats.maxRecipe or 0
+  kv(x + 2, y + 5, iw, "Самый длинный", mr > 0 and string.format("%.1f с", mr) or "—",
+     P.unprotectable and C.red or C.text)
 
   -- РЕСУРСЫ
   x, w = xs[3], ws[3]
@@ -803,13 +925,20 @@ local function statusLine()
     if not CFG.auto then return "Автоматика на паузе. " .. S.readyMsg, C.yellow end
     return S.readyMsg, S.readyOk and C.green or C.dim
   elseif ph == "OPENING" then
-    return ("Ждём, пока машина примет seed (%d с)"):format(math.floor(computer.uptime() - S.openingAt)), C.cyan
-  elseif ph == "DECAY" then
-    if P.hold > 0 then return ("Распад: до стабилизации %d с"):format(math.max(0, S.stab - P.target)), C.cyan end
-    return ("Распад: до закрытия %d с"):format(math.max(0, S.stab - P.target)), C.cyan
+    return ("Ждём, пока машина примет seed: попытка %d/%d, %d с"):format(S.openAttempt or 1, HW.openAttempts,
+      math.floor(computer.uptime() - S.openingAt)), C.cyan
+  end
+  local idle = ""
+  if (ph == "DECAY" or ph == "HOLD") and S.idleSince and P.earlyClose > 0 then
+    idle = (" · входов нет — закрытие через %d с"):format(
+      math.max(0, math.ceil(P.earlyClose - (computer.uptime() - S.idleSince))))
+  end
+  if ph == "DECAY" then
+    if P.hold > 0 then return ("Распад: до стабилизации %d с"):format(math.max(0, S.stab - P.target)) .. idle, C.cyan end
+    return ("Распад: до закрытия %d с"):format(math.max(0, S.stab - P.target)) .. idle, C.cyan
   elseif ph == "HOLD" then
     return ("Стабилизация: осталось %d с, следующий слив %s L"):format(
-      math.max(0, P.hold - S.drains), fmtL(drainCost(S.drains + 1))), C.accent
+      math.max(0, P.hold - S.drains), fmtL(drainCost(S.drains + 1))) .. idle, C.accent
   elseif ph == "CLOSING" then
     if S.mach.work then
       return ("Закрытие: ждём конец рецепта (%.1f с)%s"):format(S.mach.rem,
@@ -881,10 +1010,10 @@ local function drawSettings()
     local x = 68                                   -- колонка значений
     for i = 1, #steps do x = x - (ulen("−" .. steps[i]) + 3) end
     for i = #steps, 1, -1 do
-      local s = steps[i]
-      local t = "−" .. s
+      local st = steps[i]
+      local t = "−" .. st
       button(x, y, ulen(t) + 2, 1, t, C.white, C.btn, function()
-        D[key] = clamp(D[key] - s, LIMITS[key][1], LIMITS[key][2])
+        D[key] = clamp(D[key] - st, LIMITS[key][1], LIMITS[key][2])
       end)
       x = x + ulen(t) + 3
     end
@@ -892,52 +1021,66 @@ local function drawSettings()
     put(x + math.floor((6 - ulen(v)) / 2), y, v, C.white, C.bg)
     x = x + 7
     for i = 1, #steps do
-      local s = steps[i]
-      local t = "+" .. s
+      local st = steps[i]
+      local t = "+" .. st
       button(x, y, ulen(t) + 2, 1, t, C.white, C.btn, function()
-        D[key] = clamp(D[key] + s, LIMITS[key][1], LIMITS[key][2])
+        D[key] = clamp(D[key] + st, LIMITS[key][1], LIMITS[key][2])
       end)
       x = x + ulen(t) + 3
     end
     if hint then put(x + 2, y, hint, hintCol or C.dim, C.bg) end
   end
 
-  local function toggle(y, label, key, hint)
-    put(4, y, label, C.text, C.bg)
-    button(65, y, 12, 1, D[key] and "ВКЛ" or "ВЫКЛ", C.white, D[key] and C.btnOn or C.btnWarn, function()
+  local function toggle(x, y, label, key)
+    put(x, y, label, C.text, C.bg)
+    local bx = x + ulen(label) + 2
+    button(bx, y, 8, 1, D[key] and "ВКЛ" or "ВЫКЛ", C.white, D[key] and C.btnOn or C.btnWarn, function()
       D[key] = not D[key]
     end)
-    if hint then put(80, y, hint, C.dim, C.bg) end
+    return bx + 12
   end
 
   local P = makePlan(D)
-  stepper(5, "Время жизни дыры, с (включая базовые 100)", "maxRuntime", { 1, 10, 50 },
+  stepper(4, "Время жизни дыры, с (включая базовые 100)", "maxRuntime", { 1, 10, 50 },
     P.hold > 0 and ("стабилизация " .. P.hold .. " с") or "без spacetime")
   local m = zoneMult(D.targetStability)
-  stepper(7, "Целевая стабильность, %", "targetStability", { 1, 5 },
+  stepper(6, "Целевая стабильность, %", "targetStability", { 1, 5 },
     "×" .. m .. " параллели", m == 4 and C.z4 or (m == 2 and C.z2 or C.z1))
-  toggle(9, "Защита от войда последнего рецепта", "voidProtection",
-    "держит стабильность, пока идёт рецепт")
-  stepper(11, "Лимит доп. стабилизации для защиты, с", "protectMaxSec", { 1, 5, 30 })
-  stepper(13, "Запас по времени для защиты, с", "safetyMargin", { 1 })
-  toggle(15, "Закрывать collapser'ом", "useCollapser",
-    "иначе — стоп машины и ~15 мин до схлопывания")
+  stepper(8, "Мин. лимит доп. стабилизации (защита), с", "protectMaxSec", { 1, 5, 30 },
+    "в цикле сейчас: " .. P.extra .. " с")
+  stepper(10, "Потолок авто-лимита защиты, с", "protectAutoCap", { 5, 30 },
+    D.autoProtect and "по самому длинному рецепту" or "авто-лимит выключен", D.autoProtect and C.dim or C.faint)
+  stepper(12, "Запас по времени для защиты, с", "safetyMargin", { 1 })
+  stepper(14, "Раннее закрытие: нет входов и простой, с", "earlyCloseSec", { 1, 5 },
+    D.earlyCloseSec > 0 and "экономит spacetime" or "выключено", D.earlyCloseSec > 0 and C.dim or C.faint)
+  local tx = toggle(4, 16, "Защита от войда", "voidProtection")
+  tx = toggle(tx, 16, "Авто-лимит защиты", "autoProtect")
+  toggle(tx, 16, "Закрывать collapser'ом", "useCollapser")
 
   box(3, 17, W - 4, 4, "СВОДКА", C.accent)
   local l1 = ("Распад до %d%% за %d с → стабилизация %d с (%d–%d с) → collapser на %d с → закрытие после рецепта")
     :format(D.targetStability, P.holdStart, P.hold, P.holdStart, P.closeAt, P.closeAt)
   put(5, 18, fit(l1, W - 8), C.text, C.panel)
-  local l2 = ("Spacetime: %s L за цикл (пик %s L/с) · с защитой до %s L (пик %s L/с) · фильтр стокера ≥ %s L")
-    :format(fmtL(P.holdCost), fmtL(P.peak), fmtL(P.fullCost), fmtL(P.fullPeak), fmtL(math.ceil(P.fullCost * 1.5)))
+  local l2 = ("Spacetime: %s L/цикл (пик %s L/с) · с защитой %d с до %s L (пик %s L/с) · фильтр стокера ≥ %s L")
+    :format(fmtL(P.holdCost), fmtL(P.peak), P.extra, fmtL(P.fullCost), fmtL(P.fullPeak),
+      fmtL(math.ceil(P.fullCost * 1.5)))
   put(5, 19, fit(l2, W - 8), C.text, C.panel)
 
-  local warn = ""
-  if D.targetStability >= 50 then warn = "Цель ≥ 50%: параллели без бонуса."
+  local warn, wcol = "", C.yellow
+  local mr = CFG.stats.maxRecipe or 0
+  if P.unprotectable then
+    warn, wcol = ("Рецепт %.0f с не спасти: защиты нужно больше потолка %d с"):format(mr, P.extraCap), C.red
+  elseif D.targetStability >= 50 then warn = "Цель ≥ 50%: параллели без бонуса."
   elseif D.targetStability >= 20 then warn = "Цель ≥ 20%: только ×2 параллели." end
-  if D.voidProtection and D.targetStability <= D.safetyMargin + 1 then
-    warn = warn .. " Цель слишком низкая: защита будет держать spacetime почти всегда."
-  end
-  put(3, 21, fit(warn, W - 6), C.yellow, C.bg)
+  put(3, 21, fit(warn, 80), wcol, C.bg)
+  local rtxt = mr > 0 and ("Самый длинный рецепт: %.1f с"):format(mr) or "Рецепты ещё не замерены"
+  rput(W - 15, 21, rtxt, C.dim, C.bg)
+  button(W - 13, 21, 12, 1, "сбросить", C.white, C.btn, function()
+    CFG.stats.maxRecipe = 0
+    if D.stats then D.stats.maxRecipe = 0 end
+    saveCfg()
+    log("Замер длины рецептов сброшен")
+  end)
 
   local bw = 30
   button(3, 22, bw, 3, "СОХРАНИТЬ", C.white, C.btnOn, function()
