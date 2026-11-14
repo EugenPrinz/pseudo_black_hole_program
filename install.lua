@@ -11,6 +11,8 @@
 --    bhc-install sides    заново настроить стороны
 -- =====================================================================
 
+local INSTALLER_VERSION = "0.4.1"
+
 local component = require("component")
 local computer  = require("computer")
 local event     = require("event")
@@ -407,7 +409,7 @@ end
 
 -- ================================ MAIN ================================
 local function main()
-  say("Установщик BHC Control · режим: " .. MODE)
+  say("Установщик BHC Control " .. INSTALLER_VERSION .. " · режим: " .. MODE)
   if MODE == "update" then
     if installProgram() then say("\nГотово. Стороны и настройки не тронуты. Запуск: bhc") end
     return

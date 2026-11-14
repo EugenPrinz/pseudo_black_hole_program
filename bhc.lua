@@ -21,7 +21,7 @@
 --   * рецепт, который идёт при стабильности <= 0, войдится.
 -- =====================================================================
 
-local VERSION = "0.4.0"
+local VERSION = "0.4.1"
 
 local component = require("component")
 local computer  = require("computer")
