@@ -44,7 +44,7 @@ local function say(s) io.write(s .. "\n") end
 local function title(s) say(""); say("== " .. s .. " ==") end
 
 local function ask(q, default)
-  io.write(q .. (default ~= nil and (" [" .. tostring(default) .. "]") or "") .. ": ")
+  io.write(q .. ((default ~= nil and default ~= "") and (" [" .. tostring(default) .. "]") or "") .. ": ")
   local a = io.read()
   if a == nil then error("interrupted", 0) end
   a = a:gsub("^%s+", ""):gsub("%s+$", "")
