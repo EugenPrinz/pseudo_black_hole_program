@@ -67,13 +67,16 @@ local SIDE_ALIASES = {
   up = 1, top = 1, ["верх"] = 1, ["вверх"] = 1,
   north = 2, ["север"] = 2, south = 3, ["юг"] = 3,
   west = 4, ["запад"] = 4, east = 5, ["восток"] = 5,
+  -- имена из таблицы sides OpenOS (для transposer'а и Redstone I/O они абсолютные)
+  back = 2, front = 3, right = 4, left = 5, negy = 0, posy = 1, negz = 2, posz = 3, negx = 4, posx = 5,
 }
+local SIDE_EN = { [0] = "down", "up", "north", "south", "west", "east" }
 local SIDE_RU = { [0] = "down (низ)", "up (верх)", "north (север)", "south (юг)", "west (запад)", "east (восток)" }
 local function sideName(n) return SIDE_RU[n] or tostring(n) end
 
 local function askSide(q, default)
   while true do
-    local a = ask(q .. " — сторона", sides[default] or tostring(default))
+    local a = ask(q .. " — сторона", SIDE_EN[default] or tostring(default))
     local n = tonumber(a)
     if n and n >= 0 and n <= 5 then return math.floor(n) end
     n = SIDE_ALIASES[tostring(a):lower()]
@@ -293,6 +296,12 @@ local function setupSides()
       if inv.side ~= hw.interfaceSide and inv.side ~= hw.stockerSide then others[#others + 1] = inv.side end
     end
     if #others == 1 then hw.busSide = others[1] end
+    for _, inv in ipairs(r.inventories) do
+      if inv.side == hw.busSide and inv.size > 17 then
+        say(("  ВНИМАНИЕ: у %s %d слотов — обычный Input Bus столько не имеет (максимум 16 + схема)."):format(sideName(inv.side), inv.size))
+        say("  Под transposer'ом должен стоять обычный Input Bus, встроенный в стену BHC (не ME-шина и не buffer).")
+      end
+    end
     if not r.interface then say("  ME interface не найден: положи в него seed (слот 1) и collapser (слот 2) или укажи вручную.") end
     if not r.stocker then say("  Стокер со spacetime не найден: проверь, что в нём есть spacetime, или укажи вручную.") end
   else

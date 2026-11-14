@@ -5,8 +5,12 @@
 
 local unpack = table.unpack
 local SIDES = { down = 0, up = 1, north = 2, south = 3, west = 4, east = 5 }
-local SIDES_FULL = {}
-for k, v in pairs(SIDES) do SIDES_FULL[k] = v; SIDES_FULL[v] = k end
+-- как настоящая таблица sides в OpenOS: число → первое имя (bottom/top/back/front/right/left)
+local SIDES_FULL = {
+  [0] = "bottom", [1] = "top", [2] = "back", [3] = "front", [4] = "right", [5] = "left",
+  bottom = 0, top = 1, back = 2, front = 3, right = 4, left = 5,
+  down = 0, up = 1, north = 2, south = 3, west = 4, east = 5,
+}
 
 local failures = 0
 local function check(cond, msg)
