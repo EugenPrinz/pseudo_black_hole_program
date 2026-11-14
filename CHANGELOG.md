@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1 — 2026-11-14
+
+- `tests/autocraft.lua`: симуляция автокрафта AE2 через BHC с настоящим `bhc.lua` — заказы, подсеть, обновление
+  stocking-шин (20 тиков, немедленная проверка рецепта), периодическая проверка простаивающей машины (100 тиков,
+  useStackWatcher=false), задержка сигнала level emitter → receiver, параллели и лимит питания, рецепты обоих режимов.
+  Сценарии stream, small, big, long, mixed; параметры early=, target=, runtime=, stock=.
+- Итог прогонов: 0 войдов, 100% заказов; раннее закрытие 10 с — spacetime ≈ 0, но seed/collapser ×3 к режиму без него.
+
 ## 0.3.0 — 2026-11-14
 
 - **Установщик `install.lua`** (`bhc-install`, режимы `update` и `sides`):
