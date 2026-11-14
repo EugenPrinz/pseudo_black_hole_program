@@ -21,7 +21,7 @@
 --   * рецепт, который идёт при стабильности <= 0, войдится.
 -- =====================================================================
 
-local VERSION = "0.3.0"
+local VERSION = "0.3.2"
 
 local component = require("component")
 local computer  = require("computer")
@@ -39,7 +39,8 @@ local HW = {
   transmitterSide = sides.east,  -- Redstone I/O → wireless transmitter (включает spacetime-хэтч)
   hatchSide       = sides.down,  -- Redstone I/O ← Black Hole Utility Hatch в режиме PULSE
   interfaceSide   = sides.east,  -- Transposer: ME interface (слот 1 — seeds, слот 2 — collapsers)
-  stockerSide     = sides.up,    -- Transposer: Super Stock Replenisher со spacetime
+  stockerSide     = sides.up,    -- Transposer: Super Stock Replenisher со spacetime; -1 — стокера у transposer'а нет
+                                 -- (предохранитель стоит снаружи у хэтча spacetime, запас не проверяется)
   busSide         = sides.down,  -- Transposer: обычный input bus BHC
   seedSlot        = 1,
   collapserSlot   = 2,
@@ -241,7 +242,10 @@ local function slotCount(slot)
   return type(s) == "table" and (tonumber(s.size) or 0) or 0
 end
 
-local function stockAmount()
+local function hasStocker() return HW.stockerSide >= 0 end
+
+local function stockAmount()           -- nil — стокера у transposer'а нет
+  if not hasStocker() then return nil end
   local f = safe(tp.getFluidInTank, HW.stockerSide, 1)
   if type(f) ~= "table" then return 0 end
   if f.amount then return f.amount end
@@ -352,7 +356,7 @@ local function ready(manual)
   if CFG.useCollapser and S.res.coll < 1 then
     return false, "Нет Black Hole Collapser в ME interface (слот " .. HW.collapserSlot .. ")"
   end
-  if p.fullCost > 0 and S.res.st < p.fullCost then
+  if hasStocker() and p.fullCost > 0 and S.res.st < p.fullCost then
     return false, ("Мало spacetime: нужно %s L (защита %d с), в стокере %s L — фильтр стокера ≥ %s L")
       :format(fmtL(p.fullCost), p.extra, fmtL(S.res.st), fmtL(math.ceil(p.fullCost * 1.5)))
   end
@@ -374,7 +378,7 @@ local function tryExtend(rem)
   end
   local add = totalCost(S.drains + k) - totalCost(S.drains)
   local st = stockAmount()
-  if st < add then
+  if st and st < add then
     log(("Расширить защиту нельзя: нужно %s L, есть %s L"):format(fmtL(add), fmtL(st)), "err")
     return false
   end
@@ -890,7 +894,11 @@ local function drawPanels()
   kv(x + 2, y + 2, iw, "Удвоение через", dbl, C.text)
   kv(x + 2, y + 3, iw, "За этот цикл", S.unknown and "?" or (fmtL(S.cycleST or 0) .. " L"), C.text)
   kv(x + 2, y + 4, iw, "План/+" .. P.extra .. "с", fmtL(P.holdCost) .. " / " .. fmtL(P.fullCost) .. " L", C.text)
-  kv(x + 2, y + 5, iw, "В стокере", fmtL(S.res.st) .. " L", S.res.st >= P.fullCost and C.green or C.red)
+  if hasStocker() then
+    kv(x + 2, y + 5, iw, "В стокере", fmtL(S.res.st) .. " L", S.res.st >= P.fullCost and C.green or C.red)
+  else
+    kv(x + 2, y + 5, iw, "Предохранитель", "≥ " .. fmtL(math.ceil(P.fullCost * 1.5)) .. " L", C.dim)
+  end
 
   -- МАШИНА
   x, w = xs[2], ws[2]
@@ -1084,7 +1092,7 @@ local function drawSettings()
   local l1 = ("Распад до %d%% за %d с → стабилизация %d с (%d–%d с) → collapser на %d с → закрытие после рецепта")
     :format(D.targetStability, P.holdStart, P.hold, P.holdStart, P.closeAt, P.closeAt)
   put(5, 18, fit(l1, W - 8), C.text, C.panel)
-  local l2 = ("Spacetime: %s L/цикл (пик %s L/с) · с защитой %d с до %s L (пик %s L/с) · фильтр стокера ≥ %s L")
+  local l2 = ("Spacetime: %s L/цикл (пик %s L/с) · с защитой %d с до %s L (пик %s L/с) · фильтр стокера/предохранителя ≥ %s L")
     :format(fmtL(P.holdCost), fmtL(P.peak), P.extra, fmtL(P.fullCost), fmtL(P.fullPeak),
       fmtL(math.ceil(P.fullCost * 1.5)))
   put(5, 19, fit(l2, W - 8), C.text, C.panel)
@@ -1179,6 +1187,7 @@ local function main()
   S.grace = computer.uptime() + HW.pulseTimeout   -- если дыра уже открыта — поймаем импульс
   log("BHC Control " .. VERSION .. " запущен", "ok")
   log("Стороны: " .. HW_SOURCE, HW_SOURCE == HW_PATH and "info" or "warn")
+  if not hasStocker() then log("Стокера нет: запас spacetime не проверяется (предохранитель у хэтча)", "info") end
   pollRes(); pollMachine()
 
   local nextMach, nextRes, nextDraw = 0, 0, 0
