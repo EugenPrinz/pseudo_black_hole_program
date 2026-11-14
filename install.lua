@@ -228,22 +228,64 @@ local function readInputs(rs)
   return t
 end
 
-local function detectReceiver(rs)
-  say("  Receiver: переключи рычаг ручного управления (из схемы с вики) или положи/убери")
-  say("  предметы в подсети BHC, чтобы сигнал входов изменился. Enter — пропустить.")
-  local before = readInputs(rs)
-  ask("  Сначала запомнил текущие сигналы. Переключи и нажми Enter", "")
-  local after = readInputs(rs)
-  local changed = {}
+local function diffSides(a, b)
+  local out = {}
   for side = 0, 5 do
-    if (before[side] or 0) ~= (after[side] or 0) then changed[#changed + 1] = side end
+    if (a[side] or 0) ~= (b[side] or 0) then out[#out + 1] = side end
   end
-  if #changed == 1 then
-    say("  Найдено: сигнал изменился на стороне " .. sideName(changed[1]))
-    return changed[1]
-  elseif #changed > 1 then
-    say("  Сигнал изменился на нескольких сторонах — укажи вручную.")
+  return out
+end
+
+-- Ждём, пока сигнал на одной из сторон изменится и продержится RECV_CONFIRM с
+-- (импульсы utility hatch при открытой дыре короткие и отсекаются). Enter — пропустить.
+local RECV_WAIT, RECV_CONFIRM = BHC_RECV_WAIT or 30, 1.5
+
+local function detectReceiver(rs)
+  say("  Receiver: положи или забери предмет в подсети BHC (или дёрни рычаг ручного")
+  say(("  управления), чтобы сигнал «есть входы» изменился. Жду до %d с, Enter — пропустить."):format(RECV_WAIT))
+  local base = readInputs(rs)
+  local deadline = computer.uptime() + RECV_WAIT
+  local shown = -1
+  while computer.uptime() < deadline do
+    local left = math.ceil(deadline - computer.uptime())
+    if left ~= shown and left % 5 == 0 then say(("    …жду сигнал, осталось %d с"):format(left)); shown = left end
+    local ev, _, a, b = event.pull(0.5)
+    if ev == "interrupted" then error("interrupted", 0) end
+    if ev == "key_down" and (b == 28 or a == 13) then
+      say("  Пропущено — укажи вручную.")
+      return nil
+    end
+    if #diffSides(base, readInputs(rs)) > 0 then
+      -- подтверждение: сторона должна держать новое значение всё окно RECV_CONFIRM
+      local stable, cur = nil, nil
+      local t1 = computer.uptime() + RECV_CONFIRM
+      repeat
+        event.pull(0.25, "redstone_changed")
+        cur = readInputs(rs)
+        local d = diffSides(base, cur)
+        if stable == nil then
+          stable = {}
+          for _, side in ipairs(d) do stable[side] = true end
+        else
+          local still = {}
+          for _, side in ipairs(d) do if stable[side] then still[side] = true end end
+          stable = still
+        end
+      until computer.uptime() >= t1
+      local found = {}
+      for side in pairs(stable) do found[#found + 1] = side end
+      if #found == 1 then
+        say(("  Найдено: сигнал изменился на стороне %s (%d → %d)"):format(
+          sideName(found[1]), base[found[1]] or 0, cur[found[1]] or 0))
+        return found[1]
+      elseif #found > 1 then
+        say("  Сигнал изменился на нескольких сторонах — укажи вручную.")
+        return nil
+      end
+      -- короткий импульс (utility hatch при открытой дыре) — базу не трогаем, ждём дальше
+    end
   end
+  say("  Сигнал не изменился — проверь канал 1 (level emitter, частоты, receiver вплотную к I/O).")
   return nil
 end
 

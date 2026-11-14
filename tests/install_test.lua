@@ -56,13 +56,27 @@ local function makeEnv(world)
   local env = {}
   env.component = setmetatable({ isAvailable = function(n) return comps[n] ~= nil end }, { __index = comps })
   env.computer = { uptime = function() return T end }
+  local pulseHigh = false
   env.event = {
     pull = function(timeout, filter)
       local steps = math.floor((timeout or 1) * 20 + 0.5)
       for _ = 1, math.max(1, steps) do
         T = T + 0.05
         local tick = math.floor(T * 20 + 0.5)
+        if pulseHigh then pulseHigh = false; inputs[world.pulseSide] = 0 end
+        if world.toggleAt and T >= world.toggleAt then
+          world.toggleAt = nil
+          local s = world.receiverToggle
+          local old = inputs[s]
+          inputs[s] = old > 0 and 0 or 15
+          if filter == nil or filter == "redstone_changed" then return "redstone_changed", "rs-1", s, old, inputs[s] end
+        end
+        if world.keyAt and T >= world.keyAt and filter == nil then
+          world.keyAt = nil
+          return "key_down", "kb-1", 13, 28
+        end
         if world.pulseSide and tick % 20 == 0 then
+          pulseHigh = true; inputs[world.pulseSide] = 15
           return "redstone_changed", "rs-1", world.pulseSide, 0, 15
         end
       end
@@ -151,11 +165,11 @@ local world = {
     [5] = { size = 9, slots = { "Black Hole Seed", "Black Hole Collapser" } },   -- east: ME interface
     [0] = { size = 4, slots = {} },                                              -- down: input bus
   },
-  stocker = 1, receiverToggle = 4, pulseSide = 0,
+  stocker = 1, receiverToggle = 4, pulseSide = 0, toggleAt = 7,
 }
--- ответы: 5 вопросов transposer'а по умолчанию, Enter после переключения рычага (<toggle>),
--- 3 стороны redstone по умолчанию, автозапуск «да»
-local answers = { "", "", "", "", "", "<toggle>", "", "", "", "д" }
+-- ответы: 5 вопросов transposer'а по умолчанию; receiver ловится сам (переключение на 7 с,
+-- дыра открыта — импульсы hatch'а идут всё ожидание); 3 стороны redstone по умолчанию; автозапуск «да»
+local answers = { "", "", "", "", "", "", "", "", "д" }
 local out, ok, err, used = runInstaller(root, world, answers, nil)
 check(ok, "установщик отработал без ошибок " .. tostring(err or ""))
 check(readAll(root .. "/home/bhc.lua") == readAll("bhc.lua"), "bhc.lua скачан и совпадает с репозиторием")
@@ -187,9 +201,9 @@ local world3 = {
     [2] = { size = 9, slots = { nil, nil, "Black Hole Seed", "Black Hole Collapser" } },  -- north: interface, слоты 3/4
     [4] = { size = 16, slots = {} },                                                      -- west: bus
   },
-  stocker = 3, receiverToggle = 3, pulseSide = 2,
+  stocker = 3, receiverToggle = 3, pulseSide = 2, toggleAt = 25,
 }
-answers = { "", "", "", "", "", "<toggle>", "", "", "up" }
+answers = { "", "", "", "", "", "", "", "up" }
 out, ok, err, used = runInstaller(root, world3, answers, "sides")
 hw = readHw(root)
 check(ok, "sides без ошибок")
@@ -197,6 +211,19 @@ check(hw and hw.interfaceSide == 2 and hw.seedSlot == 3 and hw.collapserSlot == 
 check(hw and hw.stockerSide == 3 and hw.busSide == 4, "стокер south, bus west")
 check(hw and hw.receiverSide == 3 and hw.hatchSide == 2, "receiver south, hatch north")
 check(hw and hw.transmitterSide == 1, "transmitter up (введено вручную)")
+if failures > 0 then print(out) end
+
+-- ======================== сценарий 3b: receiver пропущен Enter'ом / не дождались ========================
+print("3b) Receiver: пропуск по Enter и таймаут без сигнала")
+local world3b = { inv = world3.inv, stocker = 3, receiverToggle = 3, pulseSide = 2, keyAt = 4 }
+out, ok = runInstaller(root, world3b, { "", "", "", "", "", "west", "", "up" }, "sides")
+hw = readHw(root)
+check(ok and out:find("Пропущено", 1, true) ~= nil, "Enter пропускает ожидание")
+check(hw and hw.receiverSide == 4, "receiver введён вручную после пропуска")
+local world3c = { inv = world3.inv, stocker = 3, receiverToggle = 3, pulseSide = 2 }
+out, ok = runInstaller(root, world3c, { "", "", "", "", "", "", "", "up" }, "sides")
+check(ok and out:find("Сигнал не изменился", 1, true) ~= nil, "таймаут без сигнала → подсказка про канал 1")
+check(out:find("Найдено: сигнал", 1, true) == nil, "импульсы hatch'а не приняты за receiver")
 if failures > 0 then print(out) end
 
 -- ======================== сценарий 4: без интернет-карты ========================
