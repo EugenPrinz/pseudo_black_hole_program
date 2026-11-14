@@ -255,6 +255,7 @@ local function touch(atTick, x, y)
 end
 
 -- ---------------- сценарии ----------------
+BHC_HW_PATH = os.getenv("BHC_HW_PATH") or "/nonexistent/bhc-hw.cfg"
 BHC_CFG_PATH = os.tmpname()
 os.remove(BHC_CFG_PATH)
 local dumpAt = {}

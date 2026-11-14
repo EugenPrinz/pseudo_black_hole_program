@@ -5,7 +5,8 @@
 --  Железо: раскладка «Method 1» с вики GTNH (redstone I/O + wireless
 --  receiver/transmitter + Black Hole Utility Hatch в режиме PULSE,
 --  transposer + ME interface + Super Stock Replenisher + input bus,
---  adapter с MFU на контроллер). Стороны — в таблице HW ниже.
+--  adapter с MFU на контроллер). Стороны настраивает установщик
+--  (bhc-install sides → /home/bhc-hw.cfg), по умолчанию — таблица HW ниже.
 --
 --  Экран: T3 5×2, видеокарта T3. Разрешение 128×24.
 --  Выход: кнопка «ВЫХОД» (дважды) или Ctrl+Alt+C.
@@ -20,6 +21,8 @@
 --   * рецепт, который идёт при стабильности <= 0, войдится.
 -- =====================================================================
 
+local VERSION = "0.3.0"
+
 local component = require("component")
 local computer  = require("computer")
 local event     = require("event")
@@ -27,7 +30,10 @@ local sides     = require("sides")
 local serial    = require("serialization")
 local unicode   = require("unicode")
 
--- ======================== ЖЕЛЕЗО (правь под себя) ========================
+-- ============================== ЖЕЛЕЗО ==============================
+-- Значения по умолчанию — раскладка Method 1 с вики. Свои стороны лучше задавать
+-- через установщик (bhc-install sides): он пишет /home/bhc-hw.cfg, который
+-- переопределяет эту таблицу и не затирается при обновлении программы.
 local HW = {
   receiverSide    = sides.west,  -- Redstone I/O ← wireless receiver («в подсети есть входы»)
   transmitterSide = sides.east,  -- Redstone I/O → wireless transmitter (включает spacetime-хэтч)
@@ -44,8 +50,25 @@ local HW = {
   openAttempts    = 3,           -- попыток до тревоги (повтор = выкл/вкл машины → проверка рецепта)
   collapseDelay   = 3,           -- с паузы после закрытия (анимация схлопывания)
 }
-local CFG_PATH = BHC_CFG_PATH or "/home/bhc.cfg"   -- luacheck: ignore (глобал для тестов)
--- ========================================================================
+local CFG_PATH = BHC_CFG_PATH or "/home/bhc.cfg"        -- luacheck: ignore (глобал для тестов)
+local HW_PATH  = BHC_HW_PATH  or "/home/bhc-hw.cfg"     -- luacheck: ignore
+
+local HW_SOURCE = "по умолчанию (Method 1 с вики)"
+do
+  local f = io.open(HW_PATH, "r")
+  if f then
+    local data = f:read("*a")
+    f:close()
+    local ok, t = pcall(serial.unserialize, data)
+    if ok and type(t) == "table" then
+      for k, v in pairs(t) do
+        if HW[k] ~= nil and type(v) == type(HW[k]) then HW[k] = v end
+      end
+      HW_SOURCE = HW_PATH
+    end
+  end
+end
+-- ====================================================================
 
 local DEFAULTS = {
   maxRuntime      = 200,   -- с, полное время жизни дыры (включая базовые 100)
@@ -1154,7 +1177,8 @@ local function main()
   safe(rs.setOutput, HW.transmitterSide, 0)
   S.stOn, S.stChangedAt = false, -100
   S.grace = computer.uptime() + HW.pulseTimeout   -- если дыра уже открыта — поймаем импульс
-  log("BHC Control запущен", "ok")
+  log("BHC Control " .. VERSION .. " запущен", "ok")
+  log("Стороны: " .. HW_SOURCE, HW_SOURCE == HW_PATH and "info" or "warn")
   pollRes(); pollMachine()
 
   local nextMach, nextRes, nextDraw = 0, 0, 0
